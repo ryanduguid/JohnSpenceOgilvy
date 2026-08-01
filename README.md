@@ -29,11 +29,13 @@ python export_tb.py --date 2026-06-30
 
 Options: `--tenant "name"` (substring match when multiple orgs are connected), `--out path.csv`, `--payments-only` (cash basis). Default filename: `{tenant}-tb-{date}-{accrual|cash}.csv`, so the two bases never overwrite each other.
 
-Every export runs a balance check before anything touches disk — if debits ≠ credits, no file is written and the script exits non-zero, so a truncated report can never slip into a refresh pipeline.
+Every export runs a balance check before anything touches disk — both pairs must balance (movement **and** YTD), and the expected report columns must all be present; otherwise no file is written and the script exits non-zero, so a truncated or reshaped report can never slip into a refresh pipeline.
+
+The CSV is written as UTF-8 with a BOM (`utf-8-sig`): Excel's double-click open needs the BOM to decode non-ASCII account names correctly, and Power BI and pandas strip it automatically.
 
 ## Power BI
 
-Get Data → Text/CSV → point at the export. Columns arrive typed and tidy; `Section` and `AccountCode` are ready for slicers and drill-downs. For a zero-click refresh, schedule `export_tb.py` (Task Scheduler/cron) to overwrite the same path Power BI reads. Don't run two exports concurrently — they share `token.json`, and overlapping refreshes can burn the token chain.
+Get Data → Text/CSV → point at the export. Columns arrive typed and tidy; `Section` and `AccountCode` are ready for slicers and drill-downs. For a zero-click refresh, schedule `export_tb.py` (Task Scheduler/cron) with an explicit `--out` at the fixed path Power BI reads, e.g. `python export_tb.py --out C:\data\tb-latest.csv`. The default filename embeds the report date, so a bare scheduled run writes a new file every day while Power BI keeps refreshing the stale one from setup day. Don't run two exports concurrently — they share `token.json`, and overlapping refreshes can burn the token chain.
 
 Two Xero platform limits worth knowing: uncertified apps connect to at most 25 organisations (the Demo Company doesn't count), and going past that requires App Partner certification.
 
@@ -48,7 +50,7 @@ Xero refresh tokens are **single-use**: every refresh returns a new refresh toke
 | File | Purpose |
 |---|---|
 | [`auth.py`](auth.py) | One-time browser consent → `token.json` |
-| [`xero_client.py`](xero_client.py) | Token cache, rotation-safe refresh, authed GET with 429 retry |
+| [`xero_client.py`](xero_client.py) | Token cache, rotation-safe refresh, authed GET with 429 and 401 retries |
 | [`export_tb.py`](export_tb.py) | Fetch report → flatten nested rows → CSV + balance check |
 
 ## Scope and disclaimer

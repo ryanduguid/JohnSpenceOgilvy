@@ -13,8 +13,9 @@ movement up to the report date; YTDDebit/YTDCredit are the cumulative as-at
 balances (the pair an accountant means by "trial balance"). AccountID is the
 account GUID — the stable join key.
 
-The balance check runs before anything is written; an unbalanced report
-(truncated or misparsed) writes no file and exits non-zero.
+The balance check covers both pairs (movement and YTD) and runs before
+anything is written; an unbalanced report (truncated or misparsed) writes
+no file and exits non-zero.
 """
 
 import argparse
@@ -89,6 +90,27 @@ def to_number(value: str) -> float:
     return float(value)
 
 
+def iso_date(value: str) -> str:
+    """argparse type= for --date: reject anything but YYYY-MM-DD up front,
+    before an AU-habit 30/06/2026 wastes the API call and then breaks the
+    output filename with slashes."""
+    try:
+        return date.fromisoformat(value).isoformat()
+    except ValueError:
+        raise argparse.ArgumentTypeError(
+            f'"{value}" is not YYYY-MM-DD (e.g. 2026-06-30). Note the order: '
+            "ISO year-month-day, not the AU DD/MM/YYYY."
+        ) from None
+
+
+def excel_safe(value: str) -> str:
+    """CSV formula-injection guard (OWASP): Excel executes cells starting
+    with = + - @ as formulas, and Xero account and organisation names are
+    free text anyone in the org can edit. A leading apostrophe forces Excel
+    to read the cell as text; everything else passes through untouched."""
+    return "'" + value if str(value)[:1] in ("=", "+", "-", "@") else value
+
+
 def main() -> None:
     load_dotenv()
     client_id = os.environ.get("XERO_CLIENT_ID")
@@ -97,15 +119,18 @@ def main() -> None:
         sys.exit("Set XERO_CLIENT_ID and XERO_CLIENT_SECRET in .env (see .env.example).")
 
     parser = argparse.ArgumentParser(description="Export a Xero Trial Balance to CSV.")
-    parser.add_argument("--date", default=date.today().isoformat(), help="Report date YYYY-MM-DD")
+    parser.add_argument("--date", type=iso_date, default=date.today().isoformat(), help="Report date YYYY-MM-DD")
     parser.add_argument("--tenant", default=None, help="Tenant name substring (default: first connection)")
     parser.add_argument("--out", default=None, help="Output CSV path")
     parser.add_argument("--payments-only", action="store_true", help="Cash-basis report")
     args = parser.parse_args()
 
     token = get_access_token(client_id, client_secret)
+    # credentials let api_get recover from a surprise 401 (skewed clock,
+    # stale cache) with one forced refresh instead of a raw traceback
+    creds = (client_id, client_secret)
 
-    connections = get_connections(token)
+    connections = get_connections(token, credentials=creds)
     if not connections:
         sys.exit("No Xero organisations authorised for this app — run auth.py again.")
     if args.tenant:
@@ -125,7 +150,7 @@ def main() -> None:
     if args.payments_only:
         params["paymentsOnly"] = "true"
 
-    payload = api_get(REPORT_URL, token, tenant_id=tenant["tenantId"], params=params)
+    payload = api_get(REPORT_URL, token, tenant_id=tenant["tenantId"], params=params, credentials=creds)
     reports = payload.get("Reports", [])
     if not reports:
         sys.exit("Empty Reports payload — check the date parameter and API scopes.")
@@ -133,6 +158,13 @@ def main() -> None:
     column_titles, rows = flatten_report(reports[0])
     if not rows:
         sys.exit("Report contained no account rows — nothing to export.")
+
+    # The strict zip in flatten_report only catches a cell-COUNT change; a
+    # retitled column (count unchanged) would slip through and silently zero
+    # every value via record.get(). Guard the titles themselves.
+    missing = {"Account", "Debit", "Credit", "YTD Debit", "YTD Credit"} - set(column_titles)
+    if missing:
+        sys.exit(f"Unexpected report columns — missing {sorted(missing)}. Has the API shape changed?")
 
     safe_tenant = re.sub(r"[^A-Za-z0-9._-]+", "-", tenant["tenantName"]).strip("-").lower()
     if not safe_tenant:  # all-symbol org names sanitise to nothing
@@ -153,6 +185,7 @@ def main() -> None:
     # unbalanced export must never reach disk.
     out_rows = []
     total_debit = total_credit = 0.0
+    total_ytd_debit = total_ytd_credit = 0.0
     for record in rows:
         account_raw = record.get("Account", "")
         match = ACCOUNT_PATTERN.match(account_raw)
@@ -161,27 +194,41 @@ def main() -> None:
 
         debit = to_number(record.get("Debit"))
         credit = to_number(record.get("Credit"))
+        ytd_debit = to_number(record.get("YTD Debit"))
+        ytd_credit = to_number(record.get("YTD Credit"))
         total_debit += debit
         total_credit += credit
+        total_ytd_debit += ytd_debit
+        total_ytd_credit += ytd_credit
 
         out_rows.append(
             {
                 "ReportDate": args.date,
-                "Tenant": tenant["tenantName"],
-                "Section": record.get("Section", ""),
+                "Tenant": excel_safe(tenant["tenantName"]),
+                "Section": excel_safe(record.get("Section", "")),
                 "AccountID": record.get("AccountID", ""),
-                "AccountName": name,
-                "AccountCode": code,
+                "AccountName": excel_safe(name),
+                "AccountCode": excel_safe(code),
                 "Debit": debit,
                 "Credit": credit,
-                "YTDDebit": to_number(record.get("YTD Debit")),
-                "YTDCredit": to_number(record.get("YTD Credit")),
+                "YTDDebit": ytd_debit,
+                "YTDCredit": ytd_credit,
             }
         )
 
-    diff = round(total_debit - total_credit, 2)
-    if diff != 0:
-        print(f"WARNING: debits {total_debit:,.2f} != credits {total_credit:,.2f} (diff {diff:,.2f})")
+    # Both pairs must balance — the movement columns AND the YTD as-at
+    # balances (the pair the README tells users to slice). Either one out
+    # means the report is truncated or misparsed.
+    unbalanced = False
+    for label, debits, credits in (
+        ("movement", total_debit, total_credit),
+        ("YTD", total_ytd_debit, total_ytd_credit),
+    ):
+        diff = round(debits - credits, 2)
+        if diff != 0:
+            print(f"WARNING: {label} debits {debits:,.2f} != credits {credits:,.2f} (diff {diff:,.2f})")
+            unbalanced = True
+    if unbalanced:
         print("Nothing written — report likely truncated or misparsed.")
         sys.exit(1)
 
@@ -191,7 +238,9 @@ def main() -> None:
     out_dir = os.path.dirname(os.path.abspath(out_path)) or "."
     fd, tmp_path = tempfile.mkstemp(dir=out_dir, suffix=".csv.tmp")
     try:
-        with os.fdopen(fd, "w", newline="", encoding="utf-8") as fh:
+        # utf-8-sig: the BOM is what makes Excel's double-click open decode
+        # non-ASCII names correctly; Power BI and pandas strip it anyway.
+        with os.fdopen(fd, "w", newline="", encoding="utf-8-sig") as fh:
             writer = csv.DictWriter(fh, fieldnames=fieldnames)
             writer.writeheader()
             writer.writerows(out_rows)
@@ -201,7 +250,7 @@ def main() -> None:
             os.unlink(tmp_path)
 
     print(f"Wrote {len(out_rows)} accounts to {out_path}")
-    print(f"Balance check OK: debits = credits = {total_debit:,.2f}")
+    print(f"Balance check OK: movement debits = credits = {total_debit:,.2f}; YTD = {total_ytd_debit:,.2f}")
 
 
 if __name__ == "__main__":
