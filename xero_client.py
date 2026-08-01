@@ -1,0 +1,97 @@
+"""Xero API client: token cache, rotation-safe refresh, authed GET.
+
+Xero refresh tokens are single-use — every refresh returns a NEW refresh
+token, and the old one survives only a 30-minute grace period. A script
+that fails to persist the new refresh token recovers if it reruns inside
+that window and is locked out after it. Two defences here:
+
+1. Tokens are written to disk immediately after every refresh response,
+   before any API call is made with the new access token.
+2. The write is atomic (temp file + os.replace), so a crash mid-write can't
+   leave a corrupt token.json.
+"""
+
+import json
+import os
+import tempfile
+import time
+
+import requests
+
+TOKEN_URL = "https://identity.xero.com/connect/token"
+CONNECTIONS_URL = "https://api.xero.com/connections"
+TOKEN_FILE = os.path.join(os.path.dirname(os.path.abspath(__file__)), "token.json")
+
+# Refresh this many seconds before the access token's stated expiry.
+EXPIRY_MARGIN = 60
+
+
+def save_tokens(token_response: dict) -> None:
+    """Persist a token endpoint response atomically, stamped with obtained_at."""
+    data = dict(token_response)
+    data["obtained_at"] = time.time()
+    fd, tmp_path = tempfile.mkstemp(dir=os.path.dirname(TOKEN_FILE), suffix=".tmp")
+    try:
+        with os.fdopen(fd, "w") as fh:
+            json.dump(data, fh, indent=2)
+        os.replace(tmp_path, TOKEN_FILE)
+    finally:
+        if os.path.exists(tmp_path):
+            os.unlink(tmp_path)
+
+
+def load_tokens() -> dict:
+    if not os.path.exists(TOKEN_FILE):
+        raise SystemExit("No token.json — run: python auth.py")
+    with open(TOKEN_FILE) as fh:
+        return json.load(fh)
+
+
+def get_access_token(client_id: str, client_secret: str) -> str:
+    """Return a live access token, refreshing (and re-persisting) if needed."""
+    tokens = load_tokens()
+    age = time.time() - tokens.get("obtained_at", 0)
+    if age < tokens.get("expires_in", 1800) - EXPIRY_MARGIN:
+        return tokens["access_token"]
+
+    resp = requests.post(
+        TOKEN_URL,
+        data={
+            "grant_type": "refresh_token",
+            "refresh_token": tokens["refresh_token"],
+        },
+        auth=(client_id, client_secret),
+        timeout=30,
+    )
+    if resp.status_code == 400 and "invalid_grant" in resp.text:
+        raise SystemExit(
+            "Refresh token rejected (already used or expired). "
+            "Re-authorise with: python auth.py"
+        )
+    resp.raise_for_status()
+    new_tokens = resp.json()
+    save_tokens(new_tokens)  # persist BEFORE using — rotation safety
+    return new_tokens["access_token"]
+
+
+def api_get(url: str, access_token: str, tenant_id: str | None = None, params: dict | None = None) -> dict:
+    """GET a Xero API URL with auth headers. One polite retry on 429."""
+    headers = {
+        "Authorization": f"Bearer {access_token}",
+        "Accept": "application/json",
+    }
+    if tenant_id:
+        headers["Xero-tenant-id"] = tenant_id
+
+    resp = requests.get(url, headers=headers, params=params, timeout=30)
+    if resp.status_code == 429:
+        wait = int(resp.headers.get("Retry-After", "5"))
+        time.sleep(wait)
+        resp = requests.get(url, headers=headers, params=params, timeout=30)
+    resp.raise_for_status()
+    return resp.json()
+
+
+def get_connections(access_token: str) -> list[dict]:
+    """Authorised tenants: [{tenantId, tenantName, ...}, ...]."""
+    return api_get(CONNECTIONS_URL, access_token)
