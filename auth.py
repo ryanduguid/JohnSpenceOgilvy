@@ -6,8 +6,9 @@ token.json. Run this once; export_tb.py refreshes tokens automatically after
 that.
 
 Prerequisite: an app at developer.xero.com with redirect URI matching
-XERO_REDIRECT_URI (default http://localhost:8400/callback) and the scopes
-below enabled.
+XERO_REDIRECT_URI (default http://localhost:8400/callback). The scopes
+below are requested automatically at consent time; there is nothing to
+configure in the developer portal.
 """
 
 import os
