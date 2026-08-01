@@ -1,0 +1,39 @@
+# Secrets and tokens — never committed
+.env
+token.json
+*.tmp
+
+# Client data must never enter this repo
+input/
+output/
+exports/
+clients/
+*.xlsx
+*.xlsm
+*.xlsb
+*.xls
+*.csv
+*.txt
+*.pdf
+*.aba
+*.ofx
+*.qif
+*.zip
+*.bak
+
+# Fabricated fixtures only, per the sample-* naming convention
+!samples/
+!samples/sample-*.csv
+!samples/**/sample-*.csv
+!requirements.txt
+
+# Python
+__pycache__/
+*.pyc
+.venv/
+venv/
+
+# OS / editor noise
+.DS_Store
+Thumbs.db
+desktop.ini
