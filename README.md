@@ -27,7 +27,7 @@ See [`samples/sample-output.csv`](samples/sample-output.csv) for the exact outpu
 python export_tb.py --date 2026-06-30
 ```
 
-Options: `--tenant "name"` (substring match when multiple orgs are connected), `--out path.csv`, `--payments-only` (cash basis). Default filename: `{tenant}-tb-{date}-{accrual|cash}.csv`, so the two bases never overwrite each other.
+Options: `--tenant "name"` (substring match when multiple orgs are connected), `--out path.csv`, `--payments-only` (cash basis). Default filename: `{tenant}-tb-{date}-{accrual|cash}.csv`, so the two bases never overwrite each other. The `{tenant}` segment is the org name lowercased, with every run of characters other than letters, digits, `.`, `_` and `-` collapsed to a single `-` and any leading or trailing `-` trimmed — so "Demo Company (AU)" writes `demo-company-au-tb-2026-06-30-accrual.csv` and "Smith & Co. Pty Ltd" writes `smith-co.-pty-ltd-tb-...`; an org name that sanitises away to nothing falls back to the first eight characters of the tenant ID.
 
 Every export runs a balance check before anything touches disk — both pairs must balance (movement **and** YTD), and the expected report columns must all be present; otherwise no file is written and the script exits non-zero, so a truncated or reshaped report can never slip into a refresh pipeline.
 
@@ -55,7 +55,7 @@ Xero refresh tokens are **single-use**: every refresh returns a new refresh toke
 
 ## Scope and disclaimer
 
-Read-only (`accounting.reports.trialbalance.read`, the granular scope new Xero apps require); this tool cannot write to any ledger. `token.json` and `.env` are gitignored — they are credentials, treat them like passwords. MIT-licensed utility code, no warranty; outputs feed professional review like any other workpaper input. Not affiliated with or endorsed by Xero.
+Read-only (`accounting.reports.trialbalance.read`, the granular scope new Xero apps require); this tool cannot write to any ledger. `token.json` and `.env` are gitignored — they are credentials, treat them like passwords. Both sit in the clone directory and inherit its Windows permissions, so keep the clone inside your own user profile; a clone under a shared path like `C:\Tools` hands the live refresh token and client secret to every local user. On a shared machine, strip the inherited access on the clone directory itself before scheduling anything — `icacls <clone-dir> /inheritance:r /grant:r <your-username>:(OI)(CI)F` — because every token refresh rewrites `token.json` as a new file that re-inherits the directory's permissions, so hardening the file alone lasts until the next run. MIT-licensed utility code, no warranty; outputs feed professional review like any other workpaper input. Not affiliated with or endorsed by Xero.
 
 ## Related
 

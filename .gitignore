@@ -1,7 +1,10 @@
 # Secrets and tokens — never committed
-.env
+.env*
+!.env.example
 token.json
+*.json
 *.tmp
+*.log
 
 # Client data must never enter this repo
 input/

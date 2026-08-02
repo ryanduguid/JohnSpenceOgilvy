@@ -34,6 +34,11 @@ def save_tokens(token_response: dict) -> None:
     try:
         with os.fdopen(fd, "w") as fh:
             json.dump(data, fh, indent=2)
+            # Closing only reaches the OS page cache; NTFS journals the
+            # rename's metadata, not the data behind it. Force the bytes down
+            # before os.replace destroys the previous token pair.
+            fh.flush()
+            os.fsync(fh.fileno())
         os.replace(tmp_path, TOKEN_FILE)
     finally:
         if os.path.exists(tmp_path):
@@ -44,7 +49,13 @@ def load_tokens() -> dict:
     if not os.path.exists(TOKEN_FILE):
         raise SystemExit("No token.json — run: python auth.py")
     with open(TOKEN_FILE) as fh:
-        return json.load(fh)
+        try:
+            return json.load(fh)
+        except (json.JSONDecodeError, UnicodeDecodeError):
+            raise SystemExit(
+                "token.json is unreadable or corrupt — delete it and "
+                "run: python auth.py"
+            ) from None
 
 
 def get_access_token(client_id: str, client_secret: str, force: bool = False) -> str:
