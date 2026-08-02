@@ -28,7 +28,7 @@ from datetime import date
 
 from dotenv import load_dotenv
 
-from xero_client import api_get, get_access_token, get_connections
+from xero_client import api_get, get_connections
 
 REPORT_URL = "https://api.xero.com/api.xro/2.0/Reports/TrialBalance"
 
@@ -104,11 +104,11 @@ def iso_date(value: str) -> str:
 
 
 def excel_safe(value: str) -> str:
-    """CSV formula-injection guard (OWASP): Excel executes cells starting
-    with = + - @ as formulas, and Xero account and organisation names are
-    free text anyone in the org can edit. A leading apostrophe forces Excel
-    to read the cell as text; everything else passes through untouched."""
-    return "'" + value if str(value)[:1] in ("=", "+", "-", "@") else value
+    """CSV formula-injection guard, covering OWASP's trigger set: = + - @
+    plus tab, CR and LF. Xero account and organisation names are free text
+    anyone in the org can edit. A leading apostrophe forces Excel to read
+    the cell as text; everything else passes through untouched."""
+    return "'" + value if str(value)[:1] in ("=", "+", "-", "@", "\t", "\r", "\n") else value
 
 
 def main() -> None:
@@ -120,17 +120,17 @@ def main() -> None:
 
     parser = argparse.ArgumentParser(description="Export a Xero Trial Balance to CSV.")
     parser.add_argument("--date", type=iso_date, default=date.today().isoformat(), help="Report date YYYY-MM-DD")
-    parser.add_argument("--tenant", default=None, help="Tenant name substring (default: first connection)")
+    parser.add_argument("--tenant", default=None, help="Tenant name substring (required when multiple orgs are connected)")
     parser.add_argument("--out", default=None, help="Output CSV path")
     parser.add_argument("--payments-only", action="store_true", help="Cash-basis report")
     args = parser.parse_args()
 
-    token = get_access_token(client_id, client_secret)
-    # credentials let api_get recover from a surprise 401 (skewed clock,
-    # stale cache) with one forced refresh instead of a raw traceback
+    # api_get looks the access token up fresh per call — no token is held
+    # here, so a mid-run refresh can never leave a later call using the
+    # stale one; the creds also cover the surprise-401 forced refresh
     creds = (client_id, client_secret)
 
-    connections = get_connections(token, credentials=creds)
+    connections = get_connections(creds)
     if not connections:
         sys.exit("No Xero organisations authorised for this app — run auth.py again.")
     if args.tenant:
@@ -143,6 +143,9 @@ def main() -> None:
             sys.exit(f'"{args.tenant}" matches more than one organisation ({names}) — narrow it.')
         tenant = matches[0]
     else:
+        if len(connections) > 1:
+            names = ", ".join(c["tenantName"] for c in connections)
+            sys.exit(f"More than one organisation connected ({names}) — pick one with --tenant.")
         tenant = connections[0]
     print(f"Tenant: {tenant['tenantName']}")
 
@@ -150,7 +153,7 @@ def main() -> None:
     if args.payments_only:
         params["paymentsOnly"] = "true"
 
-    payload = api_get(REPORT_URL, token, tenant_id=tenant["tenantId"], params=params, credentials=creds)
+    payload = api_get(REPORT_URL, creds, tenant_id=tenant["tenantId"], params=params)
     reports = payload.get("Reports", [])
     if not reports:
         sys.exit("Empty Reports payload — check the date parameter and API scopes.")
