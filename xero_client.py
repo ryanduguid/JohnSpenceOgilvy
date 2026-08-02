@@ -81,20 +81,23 @@ def get_access_token(client_id: str, client_secret: str, force: bool = False) ->
 
 def api_get(
     url: str,
-    access_token: str,
+    credentials: tuple[str, str],
     tenant_id: str | None = None,
     params: dict | None = None,
-    credentials: tuple[str, str] | None = None,
 ) -> dict:
     """GET a Xero API URL with auth headers. One polite retry on 429.
 
-    With credentials=(client_id, client_secret), a 401 gets one forced token
-    refresh and retry — the local expiry math can lie (skewed clock, stale
-    cache). A second 401 exits with the same re-authorise guidance the
-    invalid_grant path gives, instead of a raw traceback.
+    The access token is looked up via get_access_token() per call, never
+    passed in — a token captured once by a caller goes stale the moment any
+    call refreshes it, and every later call then repeats the 401 + forced
+    refresh, burning a single-use refresh token each time. A surprise 401
+    still gets one forced refresh and retry — the local expiry math can lie
+    (skewed clock, stale cache). A second 401 exits with the same
+    re-authorise guidance the invalid_grant path gives, instead of a raw
+    traceback.
     """
     headers = {
-        "Authorization": f"Bearer {access_token}",
+        "Authorization": f"Bearer {get_access_token(*credentials)}",
         "Accept": "application/json",
     }
     if tenant_id:
@@ -105,7 +108,7 @@ def api_get(
         wait = int(resp.headers.get("Retry-After", "5"))
         time.sleep(wait)
         resp = requests.get(url, headers=headers, params=params, timeout=30)
-    if resp.status_code == 401 and credentials:
+    if resp.status_code == 401:
         headers["Authorization"] = f"Bearer {get_access_token(*credentials, force=True)}"
         resp = requests.get(url, headers=headers, params=params, timeout=30)
         if resp.status_code == 401:
@@ -117,6 +120,6 @@ def api_get(
     return resp.json()
 
 
-def get_connections(access_token: str, credentials: tuple[str, str] | None = None) -> list[dict]:
+def get_connections(credentials: tuple[str, str]) -> list[dict]:
     """Authorised tenants: [{tenantId, tenantName, ...}, ...]."""
-    return api_get(CONNECTIONS_URL, access_token, credentials=credentials)
+    return api_get(CONNECTIONS_URL, credentials)

@@ -85,8 +85,12 @@ def main() -> None:
     server.returned_state = None
     server.timeout = 1  # keeps Ctrl-C responsive while waiting
 
-    print("Opening browser for Xero consent...")
-    webbrowser.open(url)
+    if webbrowser.open(url):
+        print("Opening browser for Xero consent...")
+        print("If the browser did not open, paste this URL into one:")
+    else:
+        print("Could not open a browser (SSH or headless session?). Paste this URL into one:")
+    print(f"  {url}")
 
     while server.auth_code is None and server.auth_error is None:
         server.handle_request()

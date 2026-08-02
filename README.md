@@ -35,7 +35,7 @@ The CSV is written as UTF-8 with a BOM (`utf-8-sig`): Excel's double-click open 
 
 ## Power BI
 
-Get Data → Text/CSV → point at the export. Columns arrive typed and tidy; `Section` and `AccountCode` are ready for slicers and drill-downs. For a zero-click refresh, schedule `export_tb.py` (Task Scheduler/cron) with an explicit `--out` at the fixed path Power BI reads, e.g. `python export_tb.py --out C:\data\tb-latest.csv`. The default filename embeds the report date, so a bare scheduled run writes a new file every day while Power BI keeps refreshing the stale one from setup day. Don't run two exports concurrently — they share `token.json`, and overlapping refreshes can burn the token chain.
+Get Data → Text/CSV → point at the export. Columns arrive typed and tidy; `Section` and `AccountCode` are ready for slicers and drill-downs. For a zero-click refresh, schedule `export_tb.py` (Task Scheduler/cron) with an explicit `--tenant` and `--out` at the fixed path Power BI reads, e.g. `python export_tb.py --tenant "Org Name" --out C:\data\tb-latest.csv`. The default filename embeds the report date, so a bare scheduled run writes a new file every day while Power BI keeps refreshing the stale one from setup day. Don't run two exports concurrently — they share `token.json`, and overlapping refreshes can burn the token chain.
 
 Two Xero platform limits worth knowing: uncertified apps connect to at most 25 organisations (the Demo Company doesn't count), and going past that requires App Partner certification.
 
