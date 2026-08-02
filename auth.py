@@ -12,6 +12,7 @@ configure in the developer portal.
 """
 
 import os
+import re
 import secrets
 import sys
 import webbrowser
@@ -29,6 +30,11 @@ TOKEN_URL = "https://identity.xero.com/connect/token"
 # (The old broad accounting.reports.read only works on pre-existing apps
 # and retires in September 2027.)
 SCOPES = "offline_access accounting.reports.trialbalance.read"
+
+# An RFC 6749 error code is a single ASCII word. The callback query is
+# whatever the browser was pointed at, so anything else — escape sequences,
+# newlines, a fake instruction — never reaches the terminal verbatim.
+ERROR_CODE = re.compile(r"[A-Za-z0-9_]{1,64}")
 
 
 class _CallbackHandler(BaseHTTPRequestHandler):
@@ -95,11 +101,15 @@ def main() -> None:
     while server.auth_code is None and server.auth_error is None:
         server.handle_request()
 
-    if server.auth_error:
-        sys.exit(f"Xero returned '{server.auth_error}' — consent was denied or cancelled. Run again.")
-
+    # State first: neither the code nor the error is worth trusting until the
+    # callback is proved to be the one this run started.
     if server.returned_state != state:
         sys.exit("State mismatch — possible CSRF or stale callback. Run again.")
+
+    if server.auth_error:
+        if ERROR_CODE.fullmatch(server.auth_error):
+            sys.exit(f"Xero returned '{server.auth_error}' — consent was denied or cancelled. Run again.")
+        sys.exit("Xero returned an error code this script could not read — consent was denied or cancelled. Run again.")
 
     resp = requests.post(
         TOKEN_URL,

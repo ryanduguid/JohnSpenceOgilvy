@@ -36,6 +36,16 @@ REPORT_URL = "https://api.xero.com/api.xro/2.0/Reports/TrialBalance"
 ACCOUNT_PATTERN = re.compile(r"^(?P<name>.*?)\s*\((?P<code>[^()]+)\)\s*$")
 
 
+def is_account_code(value: str) -> bool:
+    """A code is alphanumeric, at most 10 characters, with at least one digit
+    ("090", "GST1") — the same test the sibling repo's Power Query parser
+    applies. Anything else belongs to the name: "Term Deposit (NAB)" and
+    "Rent (Sydney)" keep their parenthetical and export an empty code, which
+    is what Xero's code-less bank and credit-card accounts carry anyway.
+    """
+    return value.isalnum() and len(value) <= 10 and any(ch.isdigit() for ch in value)
+
+
 def flatten_report(report: dict) -> tuple[list[str], list[dict]]:
     """Walk the nested Rows structure into flat account rows.
 
@@ -112,6 +122,15 @@ def excel_safe(value: str) -> str:
 
 
 def main() -> None:
+    # Non-console stdout on Windows is cp1252, not UTF-8 (PEP 528) — a macron
+    # or CJK character in an org name must not abort a redirected or piped run
+    # before the report is ever fetched.
+    for stream in (sys.stdout, sys.stderr):
+        try:
+            stream.reconfigure(encoding="utf-8", errors="replace")
+        except AttributeError:
+            pass
+
     load_dotenv()
     client_id = os.environ.get("XERO_CLIENT_ID")
     client_secret = os.environ.get("XERO_CLIENT_SECRET")
@@ -192,8 +211,10 @@ def main() -> None:
     for record in rows:
         account_raw = record.get("Account", "")
         match = ACCOUNT_PATTERN.match(account_raw)
-        name = match.group("name") if match else account_raw
-        code = match.group("code") if match else ""
+        if match and is_account_code(match.group("code")):
+            name, code = match.group("name"), match.group("code")
+        else:
+            name, code = account_raw, ""
 
         debit = to_number(record.get("Debit"))
         credit = to_number(record.get("Credit"))
@@ -247,6 +268,8 @@ def main() -> None:
             writer = csv.DictWriter(fh, fieldnames=fieldnames)
             writer.writeheader()
             writer.writerows(out_rows)
+            fh.flush()
+            os.fsync(fh.fileno())
         os.replace(tmp_path, out_path)
     finally:
         if os.path.exists(tmp_path):
