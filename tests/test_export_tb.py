@@ -1,8 +1,11 @@
+import io
 import os
+import sys
 import tempfile
 import unittest
+from unittest.mock import patch
 
-from export_tb import output_path
+from export_tb import main, output_path
 
 
 class OutputPathTests(unittest.TestCase):
@@ -50,6 +53,19 @@ class OutputPathTests(unittest.TestCase):
 
             with self.assertRaisesRegex(ValueError, "beneath the current working directory"):
                 output_path("elsewhere/tb.csv", "unused.csv", root=root)
+
+    def test_main_rejects_an_unsafe_output_before_loading_credentials(self):
+        with (
+            patch.object(sys, "argv", ["export_tb.py", "--out", "../outside.csv"]),
+            patch("export_tb.load_dotenv") as load_dotenv,
+            patch("sys.stderr", new_callable=io.StringIO) as stderr,
+        ):
+            with self.assertRaises(SystemExit) as result:
+                main()
+
+        self.assertEqual(result.exception.code, 2)
+        self.assertIn("must be a relative path", stderr.getvalue())
+        load_dotenv.assert_not_called()
 
 
 if __name__ == "__main__":

@@ -158,12 +158,6 @@ def main() -> None:
         except AttributeError:
             pass
 
-    load_dotenv()
-    client_id = os.environ.get("XERO_CLIENT_ID")
-    client_secret = os.environ.get("XERO_CLIENT_SECRET")
-    if not client_id or not client_secret:
-        sys.exit("Set XERO_CLIENT_ID and XERO_CLIENT_SECRET in .env (see .env.example).")
-
     parser = argparse.ArgumentParser(description="Export a Xero Trial Balance to CSV.")
     parser.add_argument("--date", type=iso_date, default=date.today().isoformat(), help="Report date YYYY-MM-DD")
     parser.add_argument("--tenant", default=None, help="Tenant name substring (required when multiple orgs are connected)")
@@ -174,6 +168,21 @@ def main() -> None:
     )
     parser.add_argument("--payments-only", action="store_true", help="Cash-basis report")
     args = parser.parse_args()
+
+    # Reject unsafe explicit destinations before looking up credentials or
+    # calling Xero. The default filename needs tenant metadata and is resolved
+    # later; for a supplied value the fallback is never used.
+    if args.out is not None:
+        try:
+            output_path(args.out, "unused.csv")
+        except ValueError as exc:
+            parser.error(str(exc))
+
+    load_dotenv()
+    client_id = os.environ.get("XERO_CLIENT_ID")
+    client_secret = os.environ.get("XERO_CLIENT_SECRET")
+    if not client_id or not client_secret:
+        sys.exit("Set XERO_CLIENT_ID and XERO_CLIENT_SECRET in .env (see .env.example).")
 
     # api_get looks the access token up fresh per call — no token is held
     # here, so a mid-run refresh can never leave a later call using the
