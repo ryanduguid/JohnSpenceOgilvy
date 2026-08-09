@@ -255,6 +255,46 @@ class SaveTokensTest(unittest.TestCase):
     def _temp_files(self):
         return sorted(f for f in os.listdir(self.dir) if f.endswith(".tmp"))
 
+    def test_malformed_network_token_is_rejected_before_save(self):
+        for payload in (
+            None,
+            {"access_token": "A", "expires_in": 1800},
+            {"access_token": "A", "refresh_token": "R", "expires_in": "1800"},
+            {"access_token": "A", "refresh_token": "R", "expires_in": 0},
+        ):
+            with self.subTest(payload=payload), self.assertRaises(SystemExit):
+                xero_client.validate_token_response(payload, label="test token response")
+        self.assertFalse(os.path.exists(self.token_file))
+
+    def test_well_formed_network_and_cached_tokens_are_accepted(self):
+        token = {"access_token": "A", "refresh_token": "R", "expires_in": 1800}
+        self.assertIs(xero_client.validate_token_response(token, label="test"), token)
+        token["obtained_at"] = 1.0
+        self.assertIs(xero_client.validate_token_response(token, label="test", cached=True), token)
+
+    def test_future_cached_timestamp_forces_a_refresh_instead_of_looking_fresh(self):
+        cached = {
+            "access_token": "A",
+            "refresh_token": "R",
+            "expires_in": 1800,
+            "obtained_at": 10_000.0,
+        }
+        with open(self.token_file, "w") as destination:
+            json.dump(cached, destination)
+        refreshed = {"access_token": "NEW-A", "refresh_token": "NEW-R", "expires_in": 1800}
+        response = _Response(200, payload=refreshed)
+
+        with mock.patch.object(xero_client.time, "time", return_value=1_000.0), \
+                mock.patch.object(xero_client.requests, "post", return_value=response) as post:
+            access_token = xero_client.get_access_token("client", "secret")
+
+        self.assertEqual(access_token, "NEW-A")
+        post.assert_called_once()
+        with open(self.token_file) as source:
+            saved = json.load(source)
+        self.assertEqual(saved["refresh_token"], "NEW-R")
+        self.assertEqual(saved["obtained_at"], 1_000.0)
+
     def test_success_writes_token_file_and_leaves_no_temp(self):
         xero_client.save_tokens({"refresh_token": "NEW", "access_token": "A"})
         with open(self.token_file) as fh:

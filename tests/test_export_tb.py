@@ -178,6 +178,18 @@ class CsvOutputTest(_ExportCase):
         self.assertEqual(data, expected)
 
 
+class ConnectionValidationTest(unittest.TestCase):
+    def test_remote_connection_metadata_must_be_safe_and_complete(self):
+        for payload in (
+            {"tenantId": "id", "tenantName": "name"},
+            ["not-an-object"],
+            [{"tenantId": "id"}],
+            [{"tenantId": "id", "tenantName": "Injected\nWARNING"}],
+        ):
+            with self.subTest(payload=payload), self.assertRaises(SystemExit):
+                export_tb.validated_connections(payload)
+
+
 class DecimalMoneyTest(_ExportCase):
     """The money path must be exact, not float.
 
