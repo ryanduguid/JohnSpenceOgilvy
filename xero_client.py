@@ -261,6 +261,18 @@ def get_access_token(client_id: str, client_secret: str, force: bool = False) ->
             "Refresh token rejected (already used or expired). "
             "Re-authorise with: python auth.py"
         )
+    # A mistyped XERO_CLIENT_SECRET is the other everyday failure here, and
+    # the token endpoint answers it with 401 (OAuth2 invalid_client). Without
+    # this branch raise_for_status printed a bare HTTPError traceback naming
+    # the identity endpoint, which reads as a Xero outage rather than a typo
+    # in .env. The stored refresh token is untouched either way.
+    if resp.status_code == 401:
+        raise SystemExit(
+            "Xero rejected this app's credentials when refreshing the token "
+            "(HTTP 401). Check XERO_CLIENT_ID and XERO_CLIENT_SECRET in .env "
+            "against the app at developer.xero.com; token.json was left "
+            "as it was."
+        )
     resp.raise_for_status()
     try:
         new_tokens = resp.json()

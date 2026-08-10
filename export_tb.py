@@ -24,12 +24,14 @@ import os
 import re
 import sys
 import tempfile
+import time
 from datetime import date
 from decimal import Decimal, InvalidOperation, localcontext
 
+import requests
 from dotenv import load_dotenv
 
-from xero_client import api_get, get_connections
+from xero_client import REPLACE_ATTEMPTS, REPLACE_BACKOFF, api_get, get_connections
 
 REPORT_URL = "https://api.xero.com/api.xro/2.0/Reports/TrialBalance"
 
@@ -84,9 +86,20 @@ def flatten_report(report: dict) -> tuple[list[str], list[dict]]:
                 values = cell_values(row)
                 record = {}
                 # strict: a row/header length mismatch means the API shape
-                # changed — fail loudly instead of exporting silent zeros
-                for title, value in zip(column_titles, values, strict=True):
-                    record[title] = value
+                # changed — fail loudly instead of exporting silent zeros.
+                # The bare ValueError read as a crash: it landed after the
+                # tenant name had gone to stdout, so it is reported here the
+                # way every other API-shape guard in this file reports.
+                try:
+                    for title, value in zip(column_titles, values, strict=True):
+                        record[title] = value
+                except ValueError:
+                    raise SystemExit(
+                        f'error: report section "{_shown(section)}" has a row of '
+                        f"{len(values)} cells under {len(column_titles)} header "
+                        "columns. The API shape may have changed, or this is not "
+                        "a trial balance report."
+                    ) from None
                 # synthetic keys set last so they win any header collision
                 record["Section"] = section
                 record["AccountID"] = account_id(row)
@@ -130,8 +143,9 @@ def to_number(value: str) -> Decimal:
     # Finite is not the same as usable. Decimal's default context stops at
     # Emax 999999, so a cell of "1E1000000" parses and is finite, then the
     # first total_debit += debit raises decimal.Overflow - an ArithmeticError,
-    # outside the CLI's handler tuple, so it would print a traceback after the
-    # tenant name had already gone to stdout. A shade under that, "1E999999"
+    # which run() does not catch (it handles transport failures only), so it
+    # would print a traceback after the tenant name had already gone to
+    # stdout. A shade under that, "1E999999"
     # does not overflow but makes format_amount build a one-million-character
     # CSV field. MAX_EXPONENT is eighteen orders of magnitude past the largest
     # balance sheet on earth, so nothing real is refused here. The mirror
@@ -211,6 +225,46 @@ def validated_connections(value: object) -> list[dict]:
                 raise SystemExit(f"error: Xero connection {index} has an invalid {field}.")
         result.append(item)
     return result
+
+
+def drops_non_ascii_alnum(name: str) -> bool:
+    """True when sanitising this org name would throw a letter or digit away.
+
+    The filename sanitiser keeps ASCII letters and digits only, so every
+    other script - CJK, Cyrillic, a macron or an accent - is collapsed to
+    "-" along with the punctuation. Names that differ only in those
+    characters therefore produce the same filename stem.
+    """
+    return any(
+        ch.isalnum() and not ("0" <= ch <= "9" or "A" <= ch <= "Z" or "a" <= ch <= "z")
+        for ch in name
+    )
+
+
+def default_output_filename(tenant: dict, report_date: str, basis: str) -> str:
+    """{entity}-{report}-{period-end}-{basis}: matches the file convention in
+    the sibling repos, and keeps cash vs accrual runs from overwriting each
+    other.
+
+    The entity segment is the org name lowercased with every run of
+    characters outside ASCII letters, digits, ".", "_" and "-" collapsed to
+    one "-". That is lossy for a name written in any other script, and two
+    different orgs can collapse onto one filename: two orgs whose names
+    differ only in their Chinese characters and both end "Pty Ltd" sanitise
+    to "pty-ltd" alike, so the second scheduled export silently overwrote the
+    first client's trial balance. When a letter or digit is dropped, the
+    first eight characters of the tenant ID are appended to keep the two
+    apart. A name that sanitises away to nothing still falls back to the
+    tenant ID alone, and an all-ASCII name is unchanged.
+    """
+    name = tenant["tenantName"]
+    stem = re.sub(r"[^A-Za-z0-9._-]+", "-", name).strip("-").lower()
+    discriminator = tenant["tenantId"][:8]
+    if not stem:  # all-symbol or wholly non-ASCII org names sanitise to nothing
+        stem = discriminator
+    elif drops_non_ascii_alnum(name):
+        stem = f"{stem}-{discriminator}"
+    return f"{stem}-tb-{report_date}-{basis}.csv"
 
 
 def output_path(value: str | None, default_filename: str, *, root: str | None = None) -> str:
@@ -324,15 +378,9 @@ def main() -> None:
     if missing:
         sys.exit(f"Unexpected report columns — missing {sorted(missing)}. Has the API shape changed?")
 
-    safe_tenant = re.sub(r"[^A-Za-z0-9._-]+", "-", tenant["tenantName"]).strip("-").lower()
-    if not safe_tenant:  # all-symbol org names sanitise to nothing
-        safe_tenant = tenant["tenantId"][:8]
     basis = "cash" if args.payments_only else "accrual"
-    # {entity}-{report}-{period-end}-{basis}: matches the file convention in
-    # the sibling repos, and keeps cash vs accrual runs from overwriting
-    # each other
     try:
-        out_path = output_path(args.out, f"{safe_tenant}-tb-{args.date}-{basis}.csv")
+        out_path = output_path(args.out, default_output_filename(tenant, args.date, basis))
     except ValueError as exc:
         parser.error(str(exc))
 
@@ -417,7 +465,16 @@ def main() -> None:
     # or disk-full mid-write must never leave a truncated CSV at the path a
     # scheduled Power BI refresh reads.
     out_dir = os.path.dirname(os.path.abspath(out_path)) or "."
+    # output_path accepts a nested relative --out ("exports/tb.csv") whose
+    # parent need not exist yet, and mkstemp below raised FileNotFoundError
+    # for it - after the report had been fetched and this run's single-use
+    # refresh token spent.
+    try:
+        os.makedirs(out_dir, exist_ok=True)
+    except OSError as exc:
+        sys.exit(f"error: cannot create the output directory {out_dir} ({exc}).")
     fd, tmp_path = tempfile.mkstemp(dir=out_dir, suffix=".csv.tmp")
+    written = False
     try:
         # utf-8-sig: the BOM is what makes Excel's double-click open decode
         # non-ASCII names correctly; Power BI and pandas strip it anyway.
@@ -427,14 +484,59 @@ def main() -> None:
             writer.writerows(out_rows)
             fh.flush()
             os.fsync(fh.fileno())
-        os.replace(tmp_path, out_path)
+            # Past this line the temp file holds the complete, balance-checked
+            # export and the API call that produced it cannot be replayed for
+            # free. It is worth more than the stale CSV at out_path, so the
+            # finally clause below must never delete it.
+            written = True
     finally:
-        if os.path.exists(tmp_path):
+        if not written and os.path.exists(tmp_path):
             os.unlink(tmp_path)
+
+    # os.replace onto the destination fails on Windows while Excel or Power BI
+    # Desktop holds it open, which is exactly the README's scheduled-refresh
+    # recipe. save_tokens rides out the same lock; without the retry here the
+    # finally clause above deleted a good export and left the stale file in
+    # place. On a permanent failure the temp file survives and is named, so
+    # the export can be moved into place by hand.
+    last_error: OSError | None = None
+    for attempt in range(REPLACE_ATTEMPTS):
+        try:
+            os.replace(tmp_path, out_path)
+            break
+        except OSError as exc:
+            last_error = exc
+            if attempt < REPLACE_ATTEMPTS - 1:
+                time.sleep(REPLACE_BACKOFF * (attempt + 1))
+    else:
+        raise SystemExit(
+            f"error: wrote the balanced export to {tmp_path} but could not move "
+            f"it onto {out_path} after {REPLACE_ATTEMPTS} attempts "
+            f"({last_error}). Close whatever holds {out_path} open (Excel or "
+            f"Power BI Desktop keep a lock on it), then rename {tmp_path} over "
+            "it - the report has been fetched already and re-running spends "
+            "another refresh token."
+        )
 
     print(f"Wrote {len(out_rows)} accounts to {out_path}")
     print(f"Balance check OK: movement debits = credits = {total_debit:,.2f}; YTD = {total_ytd_debit:,.2f}")
 
 
+def run() -> None:
+    """Command-line entry point.
+
+    Every failure this script raises itself is a SystemExit carrying an
+    instruction. A transport failure is not: with the machine offline or DNS
+    down, requests raises ConnectionError and a scheduled export ended with a
+    stack trace in the Task Scheduler log. Turn it into the same one-line
+    exit as everything else. Only the transport is caught here - a bug in
+    this script must still surface as a traceback.
+    """
+    try:
+        main()
+    except requests.exceptions.RequestException as exc:
+        sys.exit(f"error: could not reach Xero ({exc}) - re-run later.")
+
+
 if __name__ == "__main__":
-    main()
+    run()
