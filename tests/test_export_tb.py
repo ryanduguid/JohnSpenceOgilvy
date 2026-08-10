@@ -3,6 +3,7 @@ import io
 import os
 import sys
 import tempfile
+import unicodedata
 import unittest
 from contextlib import redirect_stdout
 from decimal import Decimal
@@ -414,6 +415,43 @@ class DefaultFilenameTest(unittest.TestCase):
             "ng-taonga-ltd-abcdef12-tb-2026-06-30-accrual.csv",
         )
 
+    def test_names_differing_only_in_a_non_alphanumeric_character_still_split(self):
+        """The collision does not need a letter. An emoji, a fullwidth comma
+        and a combining macron are all str.isalnum() == False, and all three
+        collapse to "-" like any other character outside ASCII."""
+        for first_name, second_name, stem in (
+            ("\U0001F40D Pty Ltd", "\U0001F986 Pty Ltd", "pty-ltd"),
+            ("Wong，Li Pty Ltd", "Wong；Li Pty Ltd", "wong-li-pty-ltd"),
+        ):
+            with self.subTest(names=(first_name, second_name)):
+                first = self._name(first_name, "11111111-aaaa")
+                second = self._name(second_name, "22222222-bbbb")
+                self.assertEqual(first, f"{stem}-11111111-tb-2026-06-30-accrual.csv")
+                self.assertEqual(second, f"{stem}-22222222-tb-2026-06-30-accrual.csv")
+                self.assertNotEqual(first, second)
+
+    def test_a_decomposed_name_writes_the_same_file_as_its_composed_form(self):
+        """Same org, same file, whichever normalisation form the API sends."""
+        composed = "Ngā Taonga Ltd"
+        decomposed = unicodedata.normalize("NFD", composed)
+        self.assertNotEqual(composed, decomposed)
+        self.assertEqual(self._name(decomposed), self._name(composed))
+
+    def test_a_tenant_id_cannot_turn_the_default_name_into_a_path(self):
+        """The discriminator is remote input as well, and main() creates the
+        output directory before writing - so an unsanitised separator in it
+        would put the export in a directory tree nobody asked for."""
+        for tenant_id in ("aa/bb/cc-dd", "aa\\bb\\cc-dd", "../../etc"):
+            with self.subTest(tenant_id=tenant_id):
+                filename = self._name("美食 Pty Ltd", tenant_id)
+                self.assertNotIn("/", filename)
+                self.assertNotIn("\\", filename)
+                self.assertEqual(os.path.basename(filename), filename)
+        self.assertEqual(
+            self._name("美食 Pty Ltd", "aa/bb/cc-dd"),
+            "pty-ltd-aa-bb-cc-tb-2026-06-30-accrual.csv",
+        )
+
     def test_an_all_ascii_org_name_keeps_the_documented_filename(self):
         self.assertEqual(
             self._name("Demo Company (AU)"),
@@ -455,6 +493,28 @@ class DefaultFilenameExportTest(_ExportCase):
             ["ng-taonga-ltd-abcdef12-tb-2026-06-30-accrual.csv"],
         )
         self.assertIn("ng-taonga-ltd-abcdef12-tb-2026-06-30-accrual.csv", out)
+
+    def test_a_default_run_creates_no_directory_under_the_working_directory(self):
+        """A run with no --out must write one CSV in the working directory.
+        The output directory is created before the write, so a separator in
+        the tenant ID would otherwise materialise a tree here."""
+        raised, out, _ = self.run_export(
+            [
+                ("Cash (090)", "100.00", "", "100.00", ""),
+                ("Equity (960)", "", "100.00", "", "100.00"),
+            ],
+            out=None,
+            tenant_name="美食 Pty Ltd",
+            tenant_id="aa/bb/cc-dd",
+        )
+        self.assertIsNone(raised)
+        entries = sorted(os.listdir(self.work_dir))
+        self.assertEqual(entries, ["pty-ltd-aa-bb-cc-tb-2026-06-30-accrual.csv"])
+        self.assertFalse(
+            [e for e in entries if os.path.isdir(os.path.join(self.work_dir, e))],
+            "the default filename created a directory tree",
+        )
+        self.assertIn("pty-ltd-aa-bb-cc-tb-2026-06-30-accrual.csv", out)
 
 
 class NestedOutputDirectoryTest(_ExportCase):
@@ -808,6 +868,36 @@ class TransportFailureTest(unittest.TestCase):
         self.assertTrue(message.startswith("error: "), message)
         self.assertIn("could not reach Xero", message)
         self.assertIn("getaddrinfo failed", message)
+
+    def test_a_read_timeout_is_a_transport_failure_too(self):
+        import requests
+
+        failure = requests.exceptions.ReadTimeout("timed out")
+        with mock.patch.object(export_tb, "main", side_effect=failure):
+            with self.assertRaises(SystemExit) as ctx:
+                export_tb.run()
+        self.assertIn("could not reach Xero", str(ctx.exception))
+
+    def test_an_http_status_is_not_relabelled_as_unreachability(self):
+        """raise_for_status raises HTTPError, a RequestException, for every
+        status xero_client does not answer itself. A 403 for a missing
+        accounting.reports.trialbalance.read scope and a 400 for a bad date
+        both fail again on the next run, so neither may be reported as a
+        transport failure with "re-run later" attached."""
+        import requests
+
+        for status, reason in ((403, "Forbidden"), (400, "Bad Request"), (500, "Server Error")):
+            with self.subTest(status=status):
+                response = requests.Response()
+                response.status_code = status
+                response.url = "https://api.xero.com/api.xro/2.0/Reports/TrialBalance"
+                failure = requests.exceptions.HTTPError(
+                    f"{status} Client Error: {reason} for url: {response.url}",
+                    response=response,
+                )
+                with mock.patch.object(export_tb, "main", side_effect=failure):
+                    with self.assertRaises(requests.exceptions.HTTPError):
+                        export_tb.run()
 
     def test_a_bug_in_this_script_still_surfaces_as_a_traceback(self):
         with mock.patch.object(export_tb, "main", side_effect=KeyError("boom")):

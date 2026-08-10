@@ -25,6 +25,7 @@ import re
 import sys
 import tempfile
 import time
+import unicodedata
 from datetime import date
 from decimal import Decimal, InvalidOperation, localcontext
 
@@ -227,18 +228,28 @@ def validated_connections(value: object) -> list[dict]:
     return result
 
 
-def drops_non_ascii_alnum(name: str) -> bool:
-    """True when sanitising this org name would throw a letter or digit away.
+# Every run of characters a filename segment may not carry, collapsed to one
+# "-". Used for the org name and for the tenant ID alike - both are remote
+# input, and validated_connections only refuses control characters.
+FILENAME_UNSAFE = re.compile(r"[^A-Za-z0-9._-]+")
 
-    The filename sanitiser keeps ASCII letters and digits only, so every
-    other script - CJK, Cyrillic, a macron or an accent - is collapsed to
-    "-" along with the punctuation. Names that differ only in those
-    characters therefore produce the same filename stem.
+
+def drops_non_ascii(name: str) -> bool:
+    """True when sanitising this org name would throw a character away.
+
+    FILENAME_UNSAFE keeps ASCII letters, digits, ".", "_" and "-", so every
+    other character - CJK, Cyrillic, a macron, an emoji, fullwidth
+    punctuation, a combining mark - collapses to "-". Any one of them is
+    enough to leave two different orgs sharing a stem, so the test is whether
+    the name holds a character outside ASCII at all.
+
+    The narrower "does it hold a letter or digit outside ASCII" test this
+    replaces missed every collision that does not involve a letter: an emoji,
+    a fullwidth comma and a combining macron all return False from
+    str.isalnum(), so two org names differing only in their emoji both
+    sanitised to "pty-ltd" and the second export overwrote the first.
     """
-    return any(
-        ch.isalnum() and not ("0" <= ch <= "9" or "A" <= ch <= "Z" or "a" <= ch <= "z")
-        for ch in name
-    )
+    return any(ord(ch) > 127 for ch in name)
 
 
 def default_output_filename(tenant: dict, report_date: str, basis: str) -> str:
@@ -252,17 +263,28 @@ def default_output_filename(tenant: dict, report_date: str, basis: str) -> str:
     different orgs can collapse onto one filename: two orgs whose names
     differ only in their Chinese characters and both end "Pty Ltd" sanitise
     to "pty-ltd" alike, so the second scheduled export silently overwrote the
-    first client's trial balance. When a letter or digit is dropped, the
-    first eight characters of the tenant ID are appended to keep the two
-    apart. A name that sanitises away to nothing still falls back to the
-    tenant ID alone, and an all-ASCII name is unchanged.
+    first client's trial balance. When any character outside ASCII is
+    dropped, the first eight characters of the tenant ID are appended to keep
+    the two apart. A name that sanitises away to nothing still falls back to
+    the tenant ID alone, and an all-ASCII name is unchanged.
+
+    The name is composed to NFC first. "Nga" plus a combining macron and the
+    composed "Ngā" are one org name typed two ways, and without this they
+    sanitise to two different stems - so the same org would write two
+    different files depending on which form the API happened to send.
     """
-    name = tenant["tenantName"]
-    stem = re.sub(r"[^A-Za-z0-9._-]+", "-", name).strip("-").lower()
-    discriminator = tenant["tenantId"][:8]
+    name = unicodedata.normalize("NFC", tenant["tenantName"])
+    stem = FILENAME_UNSAFE.sub("-", name).strip("-").lower()
+    # The tenant ID is remote input too, and it now reaches the filename on
+    # every non-ASCII name rather than only in the rare all-symbol fallback.
+    # Unsanitised, a "/" or "\" in it turns the default filename into a path,
+    # and main() creates the output directory before writing - so the export
+    # would silently land in a directory tree nobody asked for instead of
+    # failing. Sanitise it exactly like the stem.
+    discriminator = FILENAME_UNSAFE.sub("-", tenant["tenantId"])[:8].strip("-")
     if not stem:  # all-symbol or wholly non-ASCII org names sanitise to nothing
         stem = discriminator
-    elif drops_non_ascii_alnum(name):
+    elif drops_non_ascii(name):
         stem = f"{stem}-{discriminator}"
     return f"{stem}-tb-{report_date}-{basis}.csv"
 
@@ -531,10 +553,20 @@ def run() -> None:
     stack trace in the Task Scheduler log. Turn it into the same one-line
     exit as everything else. Only the transport is caught here - a bug in
     this script must still surface as a traceback.
+
+    The caught set is ConnectionError (which SSLError and the proxy errors
+    subclass) and Timeout, not their common base RequestException:
+    HTTPError is a RequestException too, and resp.raise_for_status() raises
+    it for every status xero_client does not answer itself. Catching the base
+    class told the operator of a 403 for a missing
+    accounting.reports.trialbalance.read scope, or a 400 for a bad --date,
+    to "re-run later" - advice that can never work, because the next run
+    fails the same way. Those keep the traceback they had before this
+    handler existed, which names the status and the URL.
     """
     try:
         main()
-    except requests.exceptions.RequestException as exc:
+    except (requests.exceptions.ConnectionError, requests.exceptions.Timeout) as exc:
         sys.exit(f"error: could not reach Xero ({exc}) - re-run later.")
 
 

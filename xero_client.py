@@ -42,9 +42,13 @@ DEFAULT_EXPIRES_IN = 1800
 # refresh token instead of trusting the cached access token.
 TOKEN_CLOCK_SKEW = 300
 
-# os.replace onto token.json fails on Windows while any other process holds
-# the destination open, and the README tells users a second concurrent run is
-# possible. Ride out a brief lock rather than losing the new refresh token.
+# os.replace fails on Windows while any other process holds the destination
+# open. Both durable writes in this project ride out a brief lock rather than
+# losing work, and both read these two constants, so retuning them changes
+# both: save_tokens onto token.json (the README tells users a second
+# concurrent run is possible, and a lost refresh token locks the app out) and
+# export_tb's CSV write onto a path Excel or Power BI Desktop may be holding
+# open, where the lost work is a report that cannot be re-fetched for free.
 REPLACE_ATTEMPTS = 5
 REPLACE_BACKOFF = 0.2
 
