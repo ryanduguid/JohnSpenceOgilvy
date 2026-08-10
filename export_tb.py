@@ -135,13 +135,18 @@ def flatten_report(report: dict) -> tuple[list[str], list[dict]]:
 MAX_EXPONENT = 30
 
 
-def _shown(text: str) -> str:
+def _shown(text: object) -> str:
     """The cell as the API sent it, safe for a terminal.
 
     Escape sequences and newlines never reach it verbatim, same rule auth.py
     applies to the OAuth error code.
+
+    Takes object, not str, and coerces: this runs on values straight off the
+    API, and every caller is either building an error message or labelling
+    one. A non-string Title used to crash here with a raw traceback, which is
+    the failure mode the callers exist to prevent.
     """
-    return "".join(ch for ch in text[:40] if ch.isprintable())
+    return "".join(ch for ch in str(text)[:40] if ch.isprintable())
 
 
 def to_number(value: str) -> Decimal:

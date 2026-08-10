@@ -709,6 +709,32 @@ class FlattenReportShapeTest(unittest.TestCase):
         )
         return {"Rows": rows}
 
+    def test_a_non_string_section_title_does_not_crash_the_export(self):
+        """The section label is built for every Section, before any error.
+
+        _shown() slices its argument, so a Title the API sent as null or a
+        number used to raise a raw TypeError here - after the tenant name had
+        reached stdout and this run's single-use refresh token was spent, and
+        with the balanced report thrown away. A label is not worth a run.
+        """
+        for title in (None, 7, True, {"nested": 1}, ["a"]):
+            with self.subTest(title=title):
+                titles, flat = export_tb.flatten_report(
+                    self._payload(["Cash (090)", "1200.00", "", "1200.00", ""], title=title)
+                )
+                self.assertEqual(titles, HEADER)
+                self.assertEqual(flat[0]["Account"], "Cash (090)")
+                self.assertEqual(flat[0]["Section"], title)
+
+    def test_a_non_string_section_title_is_still_shown_in_a_shape_error(self):
+        with self.assertRaises(SystemExit) as ctx:
+            export_tb.flatten_report(
+                self._payload(["Cash (090)", "1200.00", "", "extra"], title=None)
+            )
+        message = str(ctx.exception)
+        self.assertTrue(message.startswith("error: "), message)
+        self.assertIn("None", message)
+
     def test_a_matching_row_still_flattens(self):
         titles, flat = export_tb.flatten_report(
             self._payload(["Cash (090)", "1200.00", "", "1200.00", ""])
