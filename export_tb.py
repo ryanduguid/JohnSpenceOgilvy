@@ -310,6 +310,8 @@ def main() -> None:
     reports = payload.get("Reports", [])
     if not reports:
         sys.exit("Empty Reports payload — check the date parameter and API scopes.")
+    if not isinstance(reports, list) or not isinstance(reports[0], dict):
+        sys.exit("error: Xero Trial Balance response has an unexpected Reports shape.")
 
     column_titles, rows = flatten_report(reports[0])
     if not rows:

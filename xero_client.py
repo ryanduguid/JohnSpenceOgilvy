@@ -16,6 +16,7 @@ import json
 import math
 import os
 import re
+import sys
 import tempfile
 import time
 from datetime import datetime, timedelta, timezone
@@ -29,6 +30,11 @@ TOKEN_FILE = os.path.join(os.path.dirname(os.path.abspath(__file__)), "token.jso
 
 # Refresh this many seconds before the access token's stated expiry.
 EXPIRY_MARGIN = 60
+
+# Xero access tokens last 30 minutes. Used only when a refresh response's own
+# expires_in is unusable — the token still works, so the lifetime is guessed
+# conservatively rather than the whole rotated pair being thrown away.
+DEFAULT_EXPIRES_IN = 1800
 
 # A copied or hand-edited cache must not make an access token appear fresh for
 # hours or years. Allow a small amount of ordinary clock skew between writes
@@ -63,16 +69,47 @@ RETRY_AFTER_CLAMP = 86400
 DELTA_SECONDS = re.compile(r"[0-9]+")
 
 
-def validate_token_response(payload: object, *, label: str, cached: bool = False) -> dict:
-    """Fail before a malformed token response can replace a usable cache."""
+def _expires_in_is_usable(value: object) -> bool:
+    return type(value) is int and 1 <= value <= 86400
+
+
+def _require_token_pair(payload: object, *, label: str) -> dict:
     if not isinstance(payload, dict):
         raise SystemExit(f"error: {label} is not a JSON object; no token was saved.")
     for key in ("access_token", "refresh_token"):
         value = payload.get(key)
         if not isinstance(value, str) or not value.strip():
             raise SystemExit(f"error: {label} has no usable {key}; no token was saved.")
-    expires_in = payload.get("expires_in")
-    if type(expires_in) is not int or not 1 <= expires_in <= 86400:
+    return payload
+
+
+def validate_rotated_response(payload: object) -> dict:
+    """Validate a refresh response without ever discarding the rotated pair.
+
+    By the time this response arrives the previous refresh token is already
+    spent, so the pair in hand is the only way back in without a full
+    re-authorisation. access_token and refresh_token must be present — there
+    is nothing worth persisting without them. expires_in is a local cache
+    hint only, so an unusable one is replaced with the conservative default
+    instead of throwing a perfectly good refresh token away.
+    """
+    label = "Xero token response"
+    tokens = dict(_require_token_pair(payload, label=label))
+    if not _expires_in_is_usable(tokens.get("expires_in")):
+        print(
+            f"warning: {label} had an unusable expires_in "
+            f"({tokens.get('expires_in')!r}); treating the access token as "
+            f"valid for {DEFAULT_EXPIRES_IN}s.",
+            file=sys.stderr,
+        )
+        tokens["expires_in"] = DEFAULT_EXPIRES_IN
+    return tokens
+
+
+def validate_token_response(payload: object, *, label: str, cached: bool = False) -> dict:
+    """Fail before a malformed token response can replace a usable cache."""
+    _require_token_pair(payload, label=label)
+    if not _expires_in_is_usable(payload.get("expires_in")):
         raise SystemExit(f"error: {label} has an invalid expires_in; no token was saved.")
     if cached:
         obtained_at = payload.get("obtained_at")
@@ -229,7 +266,7 @@ def get_access_token(client_id: str, client_secret: str, force: bool = False) ->
         new_tokens = resp.json()
     except ValueError:
         raise SystemExit("error: Xero returned a non-JSON token response; the existing token cache was left untouched.") from None
-    validate_token_response(new_tokens, label="Xero token response")
+    new_tokens = validate_rotated_response(new_tokens)
     save_tokens(new_tokens)  # persist BEFORE using — rotation safety
     return new_tokens["access_token"]
 
