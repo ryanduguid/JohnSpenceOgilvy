@@ -1157,6 +1157,11 @@ class AccountCodeTest(unittest.TestCase):
             with self.subTest(value=value):
                 self.assertFalse(export_tb.is_account_code(value))
 
+    def test_a_code_uses_the_same_ascii_contract_as_power_query(self):
+        for value in ("Å90", "９０", "١٢٣"):
+            with self.subTest(value=value):
+                self.assertFalse(export_tb.is_account_code(value))
+
 
 class ParentheticalAccountExportTest(_ExportCase):
     def test_a_code_less_parenthetical_keeps_its_whole_name(self):
