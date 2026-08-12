@@ -725,7 +725,10 @@ class OutputReplaceLockTest(_ExportCase):
             len(leftovers), 1, "the completed export was deleted, not kept"
         )
         tmp_path = os.path.join(self.work_dir, leftovers[0])
-        self.assertIn(tmp_path, message)
+        self.assertIn(
+            os.path.normcase(os.path.realpath(tmp_path)),
+            os.path.normcase(message),
+        )
         with open(tmp_path, "rb") as fh:
             recovered = fh.read()
         self.assertIn(b"Cash", recovered)
@@ -766,7 +769,10 @@ class OutputFsyncFailureTest(_ExportCase):
             len(leftovers), 1, "the completed export was deleted, not kept"
         )
         tmp_path = os.path.join(self.work_dir, leftovers[0])
-        self.assertIn(tmp_path, message)
+        self.assertIn(
+            os.path.normcase(os.path.realpath(tmp_path)),
+            os.path.normcase(message),
+        )
         with open(tmp_path, "rb") as fh:
             recovered = fh.read()
         self.assertIn(b"Cash", recovered)
