@@ -20,6 +20,8 @@ sha256sum --check SHA256SUMS
 gh attestation verify xero-trial-balance-export-0.1.1.zip -R ryanduguid/xero-trial-balance-export
 gh attestation verify xero-trial-balance-export-0.1.1.zip -R ryanduguid/xero-trial-balance-export --predicate-type https://spdx.dev/Document/v2.3
 gh release view v0.1.1 -R ryanduguid/xero-trial-balance-export --json isImmutable
+gh release verify v0.1.1 -R ryanduguid/xero-trial-balance-export
+gh release verify-asset v0.1.1 xero-trial-balance-export-0.1.1.zip -R ryanduguid/xero-trial-balance-export
 ```
 
 If any gate fails, inspect it before touching the tag or draft. Never move a published tag.
