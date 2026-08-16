@@ -527,7 +527,7 @@ def main() -> None:
                 "ReportDate": args.date,
                 "Tenant": excel_safe(tenant["tenantName"]),
                 "Section": excel_safe(record.get("Section", "")),
-                "AccountID": record.get("AccountID", ""),
+                "AccountID": excel_safe(record.get("AccountID", "")),
                 "AccountName": excel_safe(name),
                 "AccountCode": excel_safe(code),
                 "Debit": format_amount(debit),

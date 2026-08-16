@@ -518,6 +518,24 @@ class ExcelInjectionExportTest(_ExportCase):
         self.assertIn("'=HYPERLINK", text)  # Tenant
         self.assertNotIn(",=cmd", text)
 
+    def test_the_account_id_column_is_guarded_like_the_other_remote_text(self):
+        """AccountID is remote free text too - it comes off the report's cell
+        Attributes, and cell_text only proves it is a string. It was the one
+        remote value written to the CSV without the guard."""
+        payload = _report(
+            [
+                ("Cash (090)", "1200.00", "", "1200.00", ""),
+                ("Trade Debtors (610)", "", "1200.00", "", "1200.00"),
+            ]
+        )
+        rows = payload["Reports"][0]["Rows"][1]["Rows"]
+        rows[0]["Cells"][0]["Attributes"][0]["Value"] = "=cmd|'/c calc'!A1"
+        raised, _, data = self.run_export([], payload=payload)
+        self.assertIsNone(raised)
+        text = data.decode("utf-8-sig")
+        self.assertIn(",'=cmd|'/c calc'!A1,", text)  # AccountID
+        self.assertNotIn(",=cmd", text)
+
 
 class DefaultFilenameTest(unittest.TestCase):
     """The sanitiser drops everything outside ASCII, folds ASCII punctuation
