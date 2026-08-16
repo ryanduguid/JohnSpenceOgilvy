@@ -479,9 +479,26 @@ class ExcelSafeTest(unittest.TestCase):
 
     def test_ordinary_values_pass_through_untouched(self):
         for value in ("", "090", "Business Bank Account", "Rent (Sydney)",
-                      "Smith & Co. Pty Ltd", "Sales =revenue"):
+                      "Smith & Co. Pty Ltd", "Sales =revenue", " Padded Name",
+                      "   "):
             with self.subTest(value=value):
                 self.assertEqual(export_tb.excel_safe(value), value)
+
+    def test_a_trigger_behind_leading_whitespace_is_still_forced_to_text(self):
+        """Excel trims leading whitespace on import, so " =HYPERLINK(...)"
+        executes exactly like "=HYPERLINK(...)". Position 0 alone let it
+        through; the guard now tests the first character after any leading
+        whitespace as well, like the sibling repos' csv_safe guards."""
+        for value in (
+            ' =HYPERLINK("http://x")',
+            "  =cmd|'/c calc'!A1",
+            " +A1",
+            " -2+3+cmd|' /C calc'!A0",
+            " @SUM(1+9)*cmd|' /C calc'!A0",
+            " \t=1+1",
+        ):
+            with self.subTest(value=value):
+                self.assertEqual(export_tb.excel_safe(value), "'" + value)
 
 
 class ExcelInjectionExportTest(_ExportCase):

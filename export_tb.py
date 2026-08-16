@@ -275,6 +275,12 @@ def excel_safe(value: object) -> str:
     anyone in the org can edit. A leading apostrophe forces Excel to read
     the cell as text; everything else passes through untouched.
 
+    The trigger is looked for after leading whitespace as well as at
+    position 0: Excel trims the leading space on import, so " =HYPERLINK(...)"
+    executes exactly like "=HYPERLINK(...)" - the rule the sibling repos'
+    csv_safe guards apply. Position 0 keeps its own test because tab, CR and
+    LF are triggers in their own right and lstrip removes them.
+
     Coerces first. The report's Section title is stored unvalidated, so a
     numeric one arrived here as an int or float: the guard test coerced but
     the concatenation did not, and a negative number tripped the '-' branch
@@ -282,7 +288,8 @@ def excel_safe(value: object) -> str:
     the refresh token spent, so the run could not simply be retried.
     """
     text = str(value)
-    return "'" + text if text[:1] in ("=", "+", "-", "@", "\t", "\r", "\n") else text
+    triggers = ("=", "+", "-", "@", "\t", "\r", "\n")
+    return "'" + text if text[:1] in triggers or text.lstrip()[:1] in triggers else text
 
 
 def validated_connections(value: object) -> list[dict]:
