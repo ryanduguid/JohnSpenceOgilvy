@@ -1,10 +1,13 @@
-"""Bind date-sensitive Xero OAuth claims to exact source blocks."""
+"""Fail closed if the documented Xero OAuth contracts change."""
 
 from __future__ import annotations
 
 import ast
+import hashlib
 import unittest
+from collections.abc import Mapping
 from pathlib import Path
+from typing import Any
 
 
 ROOT = Path(__file__).resolve().parents[1]
@@ -12,27 +15,16 @@ AUTH_PATH = ROOT / "auth.py"
 README_PATH = ROOT / "README.md"
 
 RUNTIME_SCOPES = "offline_access accounting.reports.trialbalance.read"
+README_SHA256 = "8D592E3056092B3FF96C2F77348664E97C3A35779C88CBFB5BA3760115D6925A"
+AUTH_SHA256 = "F9EC9B4F8A497C518034E7432E1A3AF78AB58D7DF19C9A4321F1FAC3FAA75F5A"
+AUTH_AST_SHA256 = "B5901FF2BAFF884BDA5D5404E38EA5DAF4804E18529704862D0A844C349AEAF4"
+
 SCOPES_URL = "https://developer.xero.com/documentation/guides/oauth2/scopes/"
 GRANULAR_FAQ_URL = "https://developer.xero.com/faq/granular-scopes"
 OAUTH_FAQ_URL = "https://developer.xero.com/faq/oauth2"
 CHANGELOG_URL = "https://developer.xero.com/changelog"
 
-SCOPE_HEADING = "## Scope and disclaimer"
-REFRESH_HEADING = "## The refresh-token gotcha"
-
-EXPECTED_AUTH_COMMENT = "\n".join(
-    (
-        "# Web and PKCE apps created on or after 2 March 2026 use granular scopes.",
-        "# Existing apps using accounting.reports.read must migrate by 13 September 2027.",
-        "# This exporter needs only offline_access and accounting.reports.trialbalance.read.",
-        "# Xero contract checked 2026-08-20 (20 August 2026):",
-        f"# {SCOPES_URL}",
-        f"# {GRANULAR_FAQ_URL}",
-        f"# {CHANGELOG_URL}",
-        "# Recheck these pages for apps created or used after that date.",
-    )
-)
-EXPECTED_SCOPE_PARAGRAPH = (
+SCOPE_PARAGRAPH = (
     "Read-only (`accounting.reports.trialbalance.read`); this tool cannot write "
     "to any ledger. Web and PKCE apps created on or after 2 March 2026 use "
     "granular scopes, while existing apps using the broad "
@@ -44,7 +36,7 @@ EXPECTED_SCOPE_PARAGRAPH = (
     "`token.json` and `.env` are gitignored. They are credentials, so treat "
     "them like passwords."
 )
-EXPECTED_REFRESH_PARAGRAPH = (
+REFRESH_PARAGRAPH = (
     "Xero refresh tokens **rotate on use**: every refresh returns a replacement "
     "refresh token. If the refresh response does not arrive, Xero permits "
     "retrying the previous token for up to a 30-minute grace period; outside "
@@ -54,27 +46,52 @@ EXPECTED_REFRESH_PARAGRAPH = (
 )
 
 
-def _normalise_newlines(text: str) -> str:
-    normalised = text.replace("\r\n", "\n")
-    if "\r" in normalised:
-        raise AssertionError("source contains a bare carriage return")
-    return normalised
+def _canonical_lf(raw: bytes) -> bytes:
+    if raw.startswith(b"\xef\xbb\xbf"):
+        raise AssertionError("UTF-8 BOM is not permitted")
+    canonical = raw.replace(b"\r\n", b"\n")
+    if b"\r" in canonical:
+        raise AssertionError("bare carriage returns are not permitted")
+    try:
+        canonical.decode("utf-8")
+    except UnicodeDecodeError as exc:
+        raise AssertionError("source must be UTF-8") from exc
+    return canonical
 
 
-def _replace_once(text: str, old: str, new: str) -> str:
-    count = text.count(old)
-    if count != 1:
-        raise AssertionError(f"expected one mutation target, found {count}")
-    return text.replace(old, new, 1)
+def _sha256(value: bytes) -> str:
+    return hashlib.sha256(value).hexdigest().upper()
 
 
-def _mutate_claim(markdown: str, expected: str, old: str, new: str) -> str:
-    return _replace_once(markdown, expected, _replace_once(expected, old, new))
+def _require_digest(raw: bytes, expected: str, name: str) -> bytes:
+    canonical = _canonical_lf(raw)
+    actual = _sha256(canonical)
+    if actual != expected:
+        raise AssertionError(
+            f"{name} changed: expected canonical SHA-256 {expected}, found {actual}"
+        )
+    return canonical
 
 
-def _scopes_assignment(source: str) -> tuple[ast.Assign | ast.AnnAssign, str]:
+def _stable_ast(value: Any) -> Any:
+    """Return a Python-version-stable executable AST projection."""
+    if isinstance(value, ast.AST):
+        fields = []
+        for name, item in ast.iter_fields(value):
+            # ``type_params`` was added in Python 3.12. Empty/None fields do not
+            # affect this module's executable tree and can vary by Python minor.
+            if name == "type_params" or item is None or item == []:
+                continue
+            fields.append((name, _stable_ast(item)))
+        return type(value).__name__, tuple(fields)
+    if isinstance(value, list):
+        return tuple(_stable_ast(item) for item in value)
+    return value
+
+
+def _scopes_assignment(tree: ast.Module) -> str:
     assignments: list[ast.Assign | ast.AnnAssign] = []
-    for node in ast.parse(_normalise_newlines(source)).body:
+    for node in tree.body:
         if isinstance(node, ast.Assign) and any(
             isinstance(target, ast.Name) and target.id == "SCOPES"
             for target in node.targets
@@ -91,90 +108,70 @@ def _scopes_assignment(source: str) -> tuple[ast.Assign | ast.AnnAssign, str]:
         raise AssertionError(
             f"expected one top-level SCOPES assignment, found {len(assignments)}"
         )
-    assignment = assignments[0]
     try:
-        value = ast.literal_eval(assignment.value)
+        value = ast.literal_eval(assignments[0].value)
     except (TypeError, ValueError) as exc:
         raise AssertionError("SCOPES must remain a literal string") from exc
     if not isinstance(value, str):
         raise AssertionError("SCOPES must remain a literal string")
-    return assignment, value
+    return value
 
 
-def _validate_runtime_scopes(source: str) -> None:
-    _, value = _scopes_assignment(source)
-    if value != RUNTIME_SCOPES:
+def _validate_readme(raw: bytes) -> None:
+    _require_digest(raw, README_SHA256, "README.md")
+
+
+def _validate_auth(raw: bytes) -> None:
+    canonical = _canonical_lf(raw)
+    try:
+        tree = ast.parse(canonical.decode("utf-8"))
+    except SyntaxError as exc:
+        raise AssertionError("auth.py must remain valid Python") from exc
+
+    scopes = _scopes_assignment(tree)
+    if scopes != RUNTIME_SCOPES:
         raise AssertionError(
-            f"runtime SCOPES changed: expected {RUNTIME_SCOPES!r}, found {value!r}"
+            f"runtime SCOPES changed: expected {RUNTIME_SCOPES!r}, found {scopes!r}"
         )
+    ast_digest = _sha256(repr(_stable_ast(tree)).encode("utf-8"))
+    if ast_digest != AUTH_AST_SHA256:
+        raise AssertionError("auth.py executable AST changed")
+    _require_digest(canonical, AUTH_SHA256, "auth.py")
 
 
-def _validate_auth_contract(source: str) -> None:
-    normalised = _normalise_newlines(source)
-    assignment, _ = _scopes_assignment(normalised)
-    lines = normalised.split("\n")
-    index = assignment.lineno - 2
-    comment: list[str] = []
-    while index >= 0 and lines[index].startswith("#"):
-        comment.append(lines[index])
-        index -= 1
-    comment.reverse()
-
-    _validate_runtime_scopes(normalised)
-    if "\n".join(comment) != EXPECTED_AUTH_COMMENT:
-        raise AssertionError("the contiguous SCOPES provenance comment changed")
+def _validate_owned_documents(documents: Mapping[str, bytes]) -> None:
+    _validate_readme(documents["README.md"])
+    _validate_auth(documents["auth.py"])
 
 
-def _section_paragraphs(markdown: str, heading: str) -> list[str]:
-    lines = _normalise_newlines(markdown).split("\n")
-    starts = [index for index, line in enumerate(lines) if line == heading]
-    if len(starts) != 1:
-        raise AssertionError(f"expected one {heading!r} section, found {len(starts)}")
-
-    start = starts[0]
-    end = next(
-        (
-            index
-            for index in range(start + 1, len(lines))
-            if lines[index].startswith("## ")
-        ),
-        len(lines),
-    )
-    section = lines[start:end]
-    if not section or section[-1] != "" or (len(section) > 1 and section[-2] == ""):
-        raise AssertionError(f"{heading!r} changed its exact section boundary")
-
-    paragraphs = "\n".join(section[:-1]).split("\n\n")
-    if any(not paragraph for paragraph in paragraphs):
-        raise AssertionError(f"{heading!r} contains an empty paragraph")
-    return paragraphs
+def _replace_once(text: str, old: str, new: str) -> str:
+    count = text.count(old)
+    if count != 1:
+        raise AssertionError(f"expected one mutation target, found {count}: {old!r}")
+    return text.replace(old, new, 1)
 
 
-def _validate_readme_claim(
+def _wrap_across_heading(
     markdown: str,
     heading: str,
-    expected: str,
-    expected_paragraphs: int,
-) -> None:
-    paragraphs = _section_paragraphs(markdown, heading)
-    if len(paragraphs) != expected_paragraphs:
-        raise AssertionError(f"{heading!r} paragraph count changed")
-    if paragraphs[0] != heading or paragraphs[1] != expected:
-        raise AssertionError(f"{heading!r} owning claim paragraph changed")
-
-
-def _validate_scope(markdown: str) -> None:
-    _validate_readme_claim(markdown, SCOPE_HEADING, EXPECTED_SCOPE_PARAGRAPH, 4)
-
-
-def _validate_refresh(markdown: str) -> None:
-    _validate_readme_claim(markdown, REFRESH_HEADING, EXPECTED_REFRESH_PARAGRAPH, 3)
+    next_heading: str,
+    opener: str,
+    closer: str,
+) -> str:
+    wrapped = _replace_once(markdown, f"{heading}\n", f"{opener}\n{heading}\n")
+    return _replace_once(
+        wrapped,
+        f"{next_heading}\n",
+        f"{next_heading}\n{closer}\n",
+    )
 
 
 class XeroAuthProvenanceTests(unittest.TestCase):
     def setUp(self) -> None:
-        self.auth = _normalise_newlines(AUTH_PATH.read_text(encoding="utf-8"))
-        self.readme = _normalise_newlines(README_PATH.read_text(encoding="utf-8"))
+        self.auth = _canonical_lf(AUTH_PATH.read_bytes())
+        self.readme = _canonical_lf(README_PATH.read_bytes())
+        self.auth_text = self.auth.decode("utf-8")
+        self.readme_text = self.readme.decode("utf-8")
 
     def assert_rejected(self, cases) -> None:
         for label, validator, source in cases:
@@ -182,280 +179,345 @@ class XeroAuthProvenanceTests(unittest.TestCase):
                 with self.assertRaises(AssertionError):
                     validator(source)
 
-    def scope_mutation(self, old: str, new: str) -> str:
-        return _mutate_claim(self.readme, EXPECTED_SCOPE_PARAGRAPH, old, new)
-
-    def refresh_mutation(self, old: str, new: str) -> str:
-        return _mutate_claim(self.readme, EXPECTED_REFRESH_PARAGRAPH, old, new)
-
-    def test_canonical_contracts_accept_lf_and_crlf_only(self) -> None:
-        for label, newline in (("LF", "\n"), ("CRLF", "\r\n")):
+    def test_exact_documents_accept_lf_crlf_and_an_unrelated_file_change(self) -> None:
+        for label, newline in (("LF", b"\n"), ("CRLF", b"\r\n")):
             with self.subTest(newlines=label):
-                _validate_auth_contract(self.auth.replace("\n", newline))
-                _validate_scope(self.readme.replace("\n", newline))
-                _validate_refresh(self.readme.replace("\n", newline))
+                _validate_readme(self.readme.replace(b"\n", newline))
+                _validate_auth(self.auth.replace(b"\n", newline))
 
-        self.assert_rejected(
-            (
-                ("bare CR in auth", _validate_auth_contract, self.auth.replace("\n", "\r")),
-                ("bare CR in README", _validate_scope, self.readme.replace("\n", "\r")),
-            )
-        )
+        contributing = (ROOT / "CONTRIBUTING.md").read_bytes()
+        documents = {
+            "README.md": self.readme,
+            "auth.py": self.auth,
+            "CONTRIBUTING.md": contributing + b"\nSafe in-memory control.\n",
+        }
+        self.assertNotEqual(documents["CONTRIBUTING.md"], contributing)
+        _validate_owned_documents(documents)
 
-    def test_runtime_scope_is_one_exact_literal(self) -> None:
-        _validate_runtime_scopes(self.auth)
-        assignment = f'SCOPES = "{RUNTIME_SCOPES}"'
-        self.assert_rejected(
-            (
-                (
-                    "broadened scope",
-                    _validate_runtime_scopes,
-                    _replace_once(
-                        self.auth,
-                        assignment,
-                        'SCOPES = "offline_access accounting.reports.read"',
-                    ),
-                ),
-                (
-                    "computed scope",
-                    _validate_runtime_scopes,
-                    _replace_once(
-                        self.auth,
-                        assignment,
-                        (
-                            'SCOPES = "offline_access " + '
-                            '"accounting.reports.trialbalance.read"'
-                        ),
-                    ),
-                ),
-                (
-                    "duplicate assignment",
-                    _validate_runtime_scopes,
-                    self.auth + f"\n{assignment}\n",
-                ),
-            )
-        )
-
-    def test_reviewer_hidden_and_semantic_mutations_are_rejected(self) -> None:
-        fenced_scope = _replace_once(
-            self.readme,
-            f"{SCOPE_HEADING}\n\n{EXPECTED_SCOPE_PARAGRAPH}",
-            f"```text\n{SCOPE_HEADING}\n\n{EXPECTED_SCOPE_PARAGRAPH}\n```",
-        )
-        fenced_refresh = _replace_once(
-            self.readme,
-            f"{REFRESH_HEADING}\n\n{EXPECTED_REFRESH_PARAGRAPH}",
-            f"```text\n{REFRESH_HEADING}\n\n{EXPECTED_REFRESH_PARAGRAPH}\n```",
-        )
-        cases = [
-            (
-                "scope paragraph hidden in HTML",
-                _validate_scope,
-                _replace_once(
-                    self.readme,
-                    EXPECTED_SCOPE_PARAGRAPH,
-                    f"<!-- {EXPECTED_SCOPE_PARAGRAPH} -->",
-                ),
-            ),
-            ("scope heading and paragraph fenced", _validate_scope, fenced_scope),
-            (
-                "refresh paragraph hidden in HTML",
-                _validate_refresh,
-                _replace_once(
-                    self.readme,
-                    EXPECTED_REFRESH_PARAGRAPH,
-                    f"<!-- {EXPECTED_REFRESH_PARAGRAPH} -->",
-                ),
-            ),
-            ("refresh heading and paragraph fenced", _validate_refresh, fenced_refresh),
-            (
-                "visible deadline stale; correct value hidden",
-                _validate_scope,
-                self.scope_mutation(
-                    "13 September 2027",
-                    "12 September 2027 <!-- 13 September 2027 -->",
-                ),
-            ),
-            (
-                "visible checked date stale; correct values hidden",
-                _validate_scope,
-                self.scope_mutation(
-                    "20 August 2026 (`2026-08-20`)",
-                    (
-                        "19 August 2026 (`2026-08-19`) "
-                        "<!-- 20 August 2026 (`2026-08-20`) -->"
-                    ),
-                ),
-            ),
-            (
-                "visible grace stale; correct value hidden",
-                _validate_refresh,
-                self.refresh_mutation(
-                    "30-minute grace period",
-                    "60-minute grace period <!-- 30-minute grace period -->",
-                ),
-            ),
-        ]
-        for label, validator, old, new in (
-            (
-                "do not use granular scopes",
-                _validate_scope,
-                "use granular scopes",
-                "do not use granular scopes",
-            ),
-            ("must not migrate", _validate_scope, "must migrate", "must not migrate"),
-            ("removed use relationship", _validate_scope, "use granular", "have granular"),
-            ("removed migration obligation", _validate_scope, "must migrate", "faces"),
-            ("forbids retrying", _validate_refresh, "permits retrying", "forbids retrying"),
-            ("removed retry permission", _validate_refresh, "permits retrying", "mentions"),
-            (
-                "removed missing-response condition",
-                _validate_refresh,
-                "If the refresh response does not arrive, ",
-                "",
-            ),
-            ("removed previous-token subject", _validate_refresh, "the previous token", "a token"),
-            (
-                "removed re-authorisation outcome",
-                _validate_refresh,
-                "the user must re-authorise",
-                "the user may continue",
-            ),
-            (
-                "removed replacement result",
-                _validate_refresh,
-                "returns a replacement refresh token",
-                "returns a token",
-            ),
+    def test_encoding_content_and_whitespace_mutations_are_rejected(self) -> None:
+        cases = []
+        for name, validator, source in (
+            ("README", _validate_readme, self.readme),
+            ("auth", _validate_auth, self.auth),
         ):
-            mutate = self.scope_mutation if validator is _validate_scope else self.refresh_mutation
-            cases.append((label, validator, mutate(old, new)))
-
-        self.assert_rejected(cases)
-
-    def test_moved_added_stale_and_decoy_content_is_rejected(self) -> None:
-        without_scope = _replace_once(
-            self.readme,
-            f"{EXPECTED_SCOPE_PARAGRAPH}\n\n",
-            "",
-        )
-        without_refresh = _replace_once(
-            self.readme,
-            f"{EXPECTED_REFRESH_PARAGRAPH}\n\n",
-            "",
-        )
-        cases = [
-            (
-                "scope claim moved to Files",
-                _validate_scope,
-                _replace_once(
-                    without_scope,
-                    "## Files\n\n",
-                    f"## Files\n\n{EXPECTED_SCOPE_PARAGRAPH}\n\n",
-                ),
-            ),
-            (
-                "refresh claim moved to Files",
-                _validate_refresh,
-                _replace_once(
-                    without_refresh,
-                    "## Files\n\n",
-                    f"## Files\n\n{EXPECTED_REFRESH_PARAGRAPH}\n\n",
-                ),
-            ),
-            (
-                "added contradictory scope clause",
-                _validate_scope,
-                _replace_once(
-                    self.readme,
-                    EXPECTED_SCOPE_PARAGRAPH,
-                    EXPECTED_SCOPE_PARAGRAPH + " Web apps do not use granular scopes.",
-                ),
-            ),
-            (
-                "added contradictory scope paragraph",
-                _validate_scope,
-                _replace_once(
-                    self.readme,
-                    f"{EXPECTED_SCOPE_PARAGRAPH}\n\n",
-                    (
-                        f"{EXPECTED_SCOPE_PARAGRAPH}\n\n"
-                        "Web apps do not use granular scopes.\n\n"
-                    ),
-                ),
-            ),
-            (
-                "added contradictory refresh paragraph",
-                _validate_refresh,
-                _replace_once(
-                    self.readme,
-                    f"{EXPECTED_REFRESH_PARAGRAPH}\n\n",
-                    (
-                        f"{EXPECTED_REFRESH_PARAGRAPH}\n\n"
-                        "Xero forbids retrying the previous token.\n\n"
-                    ),
-                ),
-            ),
-            (
-                "scope broadened",
-                _validate_scope,
-                self.scope_mutation(
-                    "accounting.reports.trialbalance.read",
-                    "accounting.reports.read",
-                ),
-            ),
-            (
-                "single-use label restored",
-                _validate_refresh,
-                self.refresh_mutation("**rotate on use**", "**are single-use**"),
-            ),
-        ]
-
-        for url in (SCOPES_URL, GRANULAR_FAQ_URL, CHANGELOG_URL):
-            auth = _replace_once(self.auth, f"# {url}", "#")
-            scope = _replace_once(
-                self.readme,
-                f"]({url})",
-                "](https://example.invalid/)",
-            )
             cases.extend(
                 (
+                    (f"{name} UTF-8 BOM", validator, b"\xef\xbb\xbf" + source),
                     (
-                        f"auth URL moved: {url}",
-                        _validate_auth_contract,
-                        auth + f"\n# Decoy: {url}\n",
+                        f"{name} lone carriage return",
+                        validator,
+                        source.replace(b"\n", b"\r", 1),
                     ),
+                    (f"{name} added content", validator, source + b"changed\n"),
+                    (f"{name} added blank line", validator, source + b"\n"),
                     (
-                        f"scope URL moved: {url}",
-                        _validate_scope,
-                        scope + f"\n\nDecoy: {url}\n",
+                        f"{name} trailing whitespace",
+                        validator,
+                        source.replace(b"\n", b" \n", 1),
                     ),
                 )
             )
+        self.assert_rejected(cases)
 
-        refresh = _replace_once(
-            self.readme,
-            f"]({OAUTH_FAQ_URL})",
-            "](https://example.invalid/)",
+    def test_all_reviewer_readme_mutations_are_rejected(self) -> None:
+        scope_html = _wrap_across_heading(
+            self.readme_text,
+            "## Scope and disclaimer",
+            "## Tests",
+            "<!--",
+            "-->",
         )
-        cases.append(
+        scope_fence = _wrap_across_heading(
+            self.readme_text,
+            "## Scope and disclaimer",
+            "## Tests",
+            "```text",
+            "```",
+        )
+        refresh_html = _wrap_across_heading(
+            self.readme_text,
+            "## The refresh-token gotcha",
+            "## Files",
+            "<!--",
+            "-->",
+        )
+        refresh_fence = _wrap_across_heading(
+            self.readme_text,
+            "## The refresh-token gotcha",
+            "## Files",
+            "```text",
+            "```",
+        )
+
+        replacements = (
             (
-                "OAuth FAQ moved",
-                _validate_refresh,
-                refresh + f"\n\nDecoy: {OAUTH_FAQ_URL}\n",
+                "scope claim hidden in HTML",
+                "Read-only (`accounting.reports.trialbalance.read`);",
+                "<!-- Read-only (`accounting.reports.trialbalance.read`); -->",
+            ),
+            (
+                "visible deadline stale with correct decoy",
+                "13 September 2027",
+                "12 September 2027 <!-- 13 September 2027 -->",
+            ),
+            (
+                "visible checked date stale with correct decoy",
+                "were checked on 20 August 2026 (`2026-08-20`)",
+                (
+                    "were checked on 19 August 2026 (`2026-08-19`) "
+                    "<!-- 20 August 2026 (`2026-08-20`) -->"
+                ),
+            ),
+            (
+                "visible grace stale with correct decoy",
+                "30-minute grace period",
+                "60-minute grace period <!-- 30-minute grace period -->",
+            ),
+            ("granular scope negated", "use granular scopes", "do not use granular scopes"),
+            ("migration negated", "must migrate", "must not migrate"),
+            ("scope relationship removed", "use granular", "have granular"),
+            ("migration obligation removed", "must migrate", "faces"),
+            ("retry forbidden", "permits retrying", "forbids retrying"),
+            ("retry permission removed", "permits retrying", "mentions"),
+            (
+                "later Scope contradiction",
+                "On Windows, `token.json` uses",
+                "Web and PKCE apps do not use granular scopes. On Windows, `token.json` uses",
+            ),
+            (
+                "scope URL moved to a decoy",
+                "https://developer.xero.com/faq/granular-scopes",
+                "https://example.invalid/\n\nDecoy: https://developer.xero.com/faq/granular-scopes",
+            ),
+            (
+                "OAuth FAQ moved to a decoy",
+                "https://developer.xero.com/faq/oauth2",
+                "https://example.invalid/\n\nDecoy: https://developer.xero.com/faq/oauth2",
+            ),
+            (
+                "broad report scope restored",
+                "accounting.reports.trialbalance.read",
+                "accounting.reports.read",
+            ),
+            ("single-use label restored", "**rotate on use**", "**are single-use**"),
+            (
+                "retry condition removed",
+                "If the refresh response does not arrive, ",
+                "",
+            ),
+            ("previous-token subject removed", "the previous token", "a token"),
+            (
+                "replacement-token result removed",
+                "returns a replacement refresh token",
+                "returns a token",
+            ),
+            (
+                "re-authorisation outcome removed",
+                "the user must re-authorise",
+                "the user may continue",
+            ),
+        )
+        cases = [
+            ("scope balanced HTML wrapper", _validate_readme, scope_html.encode()),
+            ("scope cross-heading fence wrapper", _validate_readme, scope_fence.encode()),
+            ("refresh balanced HTML wrapper", _validate_readme, refresh_html.encode()),
+            ("refresh cross-heading fence wrapper", _validate_readme, refresh_fence.encode()),
+            (
+                "entire scope claim hidden in HTML",
+                _validate_readme,
+                _replace_once(
+                    self.readme_text,
+                    SCOPE_PARAGRAPH,
+                    f"<!-- {SCOPE_PARAGRAPH} -->",
+                ).encode(),
+            ),
+            (
+                "scope heading and claim inside a local fence",
+                _validate_readme,
+                _replace_once(
+                    self.readme_text,
+                    f"## Scope and disclaimer\n\n{SCOPE_PARAGRAPH}",
+                    f"```text\n## Scope and disclaimer\n\n{SCOPE_PARAGRAPH}\n```",
+                ).encode(),
+            ),
+            (
+                "entire refresh claim hidden in HTML",
+                _validate_readme,
+                _replace_once(
+                    self.readme_text,
+                    REFRESH_PARAGRAPH,
+                    f"<!-- {REFRESH_PARAGRAPH} -->",
+                ).encode(),
+            ),
+            (
+                "refresh heading and claim inside a local fence",
+                _validate_readme,
+                _replace_once(
+                    self.readme_text,
+                    f"## The refresh-token gotcha\n\n{REFRESH_PARAGRAPH}",
+                    f"```text\n## The refresh-token gotcha\n\n{REFRESH_PARAGRAPH}\n```",
+                ).encode(),
+            ),
+        ]
+        cases.extend(
+            (
+                label,
+                _validate_readme,
+                _replace_once(self.readme_text, old, new).encode("utf-8"),
+            )
+            for label, old, new in replacements
+        )
+
+        without_scope = _replace_once(
+            self.readme_text,
+            f"{SCOPE_PARAGRAPH}\n\n",
+            "",
+        )
+        without_refresh = _replace_once(
+            self.readme_text,
+            f"{REFRESH_PARAGRAPH}\n\n",
+            "",
+        )
+        cases.extend(
+            (
+                (
+                    "scope claim moved to Files",
+                    _validate_readme,
+                    _replace_once(
+                        without_scope,
+                        "## Files\n\n",
+                        f"## Files\n\n{SCOPE_PARAGRAPH}\n\n",
+                    ).encode(),
+                ),
+                (
+                    "refresh claim moved to Files",
+                    _validate_readme,
+                    _replace_once(
+                        without_refresh,
+                        "## Files\n\n",
+                        f"## Files\n\n{REFRESH_PARAGRAPH}\n\n",
+                    ).encode(),
+                ),
+                (
+                    "contradictory scope clause appended",
+                    _validate_readme,
+                    _replace_once(
+                        self.readme_text,
+                        SCOPE_PARAGRAPH,
+                        SCOPE_PARAGRAPH + " Web apps do not use granular scopes.",
+                    ).encode(),
+                ),
+                (
+                    "contradictory scope paragraph appended",
+                    _validate_readme,
+                    _replace_once(
+                        self.readme_text,
+                        f"{SCOPE_PARAGRAPH}\n\n",
+                        (
+                            f"{SCOPE_PARAGRAPH}\n\n"
+                            "Web apps do not use granular scopes.\n\n"
+                        ),
+                    ).encode(),
+                ),
+                (
+                    "contradictory refresh paragraph appended",
+                    _validate_readme,
+                    _replace_once(
+                        self.readme_text,
+                        f"{REFRESH_PARAGRAPH}\n\n",
+                        (
+                            f"{REFRESH_PARAGRAPH}\n\n"
+                            "Xero forbids retrying the previous token.\n\n"
+                        ),
+                    ).encode(),
+                ),
             )
         )
 
-        for label, old, new in (
-            ("auth checked date stale", "2026-08-20", "2026-08-19"),
-            ("auth deadline vague", "13 September 2027", "September 2027"),
-            ("auth scope negated", "use granular scopes", "do not use granular scopes"),
-            ("auth migration negated", "must migrate", "must not migrate"),
-        ):
+        for url in (SCOPES_URL, CHANGELOG_URL):
             cases.append(
-                (label, _validate_auth_contract, _replace_once(self.auth, old, new))
+                (
+                    f"scope URL moved to a decoy: {url}",
+                    _validate_readme,
+                    (
+                        _replace_once(self.readme_text, f"]({url})", "](https://example.invalid/)")
+                        + f"\n\nDecoy: {url}\n"
+                    ).encode(),
+                )
             )
+        self.assert_rejected(cases)
 
+    def test_auth_contract_and_executable_guard_are_fail_closed(self) -> None:
+        assignment = f'SCOPES = "{RUNTIME_SCOPES}"'
+        cases = [
+            (
+                "broadened runtime scope",
+                _validate_auth,
+                _replace_once(
+                    self.auth_text,
+                    assignment,
+                    'SCOPES = "offline_access accounting.reports.read"',
+                ).encode(),
+            ),
+            (
+                "computed runtime scope",
+                _validate_auth,
+                _replace_once(
+                    self.auth_text,
+                    assignment,
+                    'SCOPES = "offline_access " + "accounting.reports.trialbalance.read"',
+                ).encode(),
+            ),
+            (
+                "duplicate runtime scope",
+                _validate_auth,
+                self.auth + f"\n{assignment}\n".encode(),
+            ),
+            (
+                "executable statement changed",
+                _validate_auth,
+                _replace_once(
+                    self.auth_text,
+                    "server.timeout = 1",
+                    "server.timeout = 2",
+                ).encode(),
+            ),
+            (
+                "auth checked date stale",
+                _validate_auth,
+                _replace_once(self.auth_text, "2026-08-20", "2026-08-19").encode(),
+            ),
+            (
+                "auth deadline vague",
+                _validate_auth,
+                _replace_once(self.auth_text, "13 September 2027", "September 2027").encode(),
+            ),
+            (
+                "auth granular scope negated",
+                _validate_auth,
+                _replace_once(
+                    self.auth_text,
+                    "use granular scopes",
+                    "do not use granular scopes",
+                ).encode(),
+            ),
+            (
+                "auth migration negated",
+                _validate_auth,
+                _replace_once(self.auth_text, "must migrate", "must not migrate").encode(),
+            ),
+        ]
+        for url in (SCOPES_URL, GRANULAR_FAQ_URL, CHANGELOG_URL):
+            cases.append(
+                (
+                    f"auth URL moved to a decoy: {url}",
+                    _validate_auth,
+                    (
+                        _replace_once(self.auth_text, f"# {url}", "#")
+                        + f"\n# Decoy: {url}\n"
+                    ).encode(),
+                )
+            )
         self.assert_rejected(cases)
 
 
