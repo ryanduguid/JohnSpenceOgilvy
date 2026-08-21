@@ -189,7 +189,7 @@ def _shown(text: object) -> str:
     return "".join(ch for ch in str(text)[:40] if ch.isprintable())
 
 
-def to_number(value: str) -> Decimal:
+def to_number(value: object) -> Decimal:
     """Parse a report cell into an exact Decimal.
 
     Money never goes through float here. float("0.1") + float("0.2") is not
@@ -597,10 +597,9 @@ def main() -> None:
     # or CJK character in an org name must not abort a redirected or piped run
     # before the report is ever fetched.
     for stream in (sys.stdout, sys.stderr):
-        try:
-            stream.reconfigure(encoding="utf-8", errors="replace")
-        except AttributeError:
-            pass
+        reconfigure = getattr(stream, "reconfigure", None)
+        if callable(reconfigure):
+            reconfigure(encoding="utf-8", errors="replace")
 
     parser = argparse.ArgumentParser(description="Export a Xero Trial Balance to CSV.")
     parser.add_argument("--date", type=iso_date, default=date.today().isoformat(), help="Report date YYYY-MM-DD")
