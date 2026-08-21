@@ -342,22 +342,18 @@ def _release_token_lock(lock_file) -> None:
 @contextmanager
 def _token_cache_lock():
     """Hold the cross-process lock for TOKEN_FILE's cache transaction."""
-<<<<<<< HEAD
-    token_file = os.path.abspath(TOKEN_FILE)
+    token_file = os.path.realpath(os.path.abspath(TOKEN_FILE))
     allowed_roots = (
-        os.path.abspath(os.path.expanduser("~")),
-        os.path.abspath(os.getcwd()),
-        os.path.abspath(tempfile.gettempdir()),
-        os.path.abspath(os.path.dirname(__file__)),
+        os.path.realpath(os.path.abspath(os.path.expanduser("~"))),
+        os.path.realpath(os.path.abspath(os.getcwd())),
+        os.path.realpath(os.path.abspath(tempfile.gettempdir())),
+        os.path.realpath(os.path.abspath(os.path.dirname(__file__))),
     )
     if os.path.basename(token_file) != "token.json" or not any(
         token_file == root or token_file.startswith(root + os.sep)
         for root in allowed_roots
     ):
         raise SystemExit("error: token cache path is not allowed.")
-=======
-    token_file = safe_token_path(TOKEN_FILE)
->>>>>>> e2cfb13 (Resolve Windows 8.3 temp paths so token-cache comparisons stay equal.)
     lock_path = token_file + ".lock"
     try:
         os.makedirs(os.path.dirname(token_file) or ".", exist_ok=True)
