@@ -2,6 +2,7 @@ import json
 import multiprocessing
 import os
 import stat
+from pathlib import Path
 import tempfile
 import unittest
 from datetime import datetime, timedelta, timezone
@@ -989,7 +990,9 @@ class ResolveTokenFileTest(unittest.TestCase):
             os.path.dirname(resolved),
             os.path.dirname(os.path.abspath(xero_client.__file__)),
         )
-        self.assertTrue(resolved.endswith("xero-trial-balance-export/token.json"))
+        resolved_path = Path(resolved)
+        self.assertEqual(resolved_path.name, "token.json")
+        self.assertEqual(resolved_path.parent.name, "xero-trial-balance-export")
 
     def test_blank_cli_value_falls_through_to_env(self):
         with mock.patch.dict(os.environ, {"XERO_TOKEN_FILE": "/tmp/env-cache/token.json"}):
