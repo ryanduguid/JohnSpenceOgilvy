@@ -37,6 +37,7 @@ CONNECTIONS_URL = "https://api.xero.com/connections"
 from token_store import (  # noqa: E402
     DEFAULT_TOKEN_FILE,
     resolve_token_file,
+    safe_token_path,
 )
 
 TOKEN_FILE = resolve_token_file()
@@ -336,9 +337,10 @@ def _release_token_lock(lock_file) -> None:
 @contextmanager
 def _token_cache_lock():
     """Hold the cross-process lock for TOKEN_FILE's cache transaction."""
-    lock_path = f"{TOKEN_FILE}.lock"
+    token_file = safe_token_path(TOKEN_FILE)
+    lock_path = f"{token_file}.lock"
     try:
-        os.makedirs(os.path.dirname(os.path.abspath(TOKEN_FILE)) or ".", exist_ok=True)
+        os.makedirs(os.path.dirname(token_file) or ".", exist_ok=True)
         lock_file = open(lock_path, "a+b")
     except OSError as exc:
         raise SystemExit(

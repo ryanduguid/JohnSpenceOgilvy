@@ -1005,6 +1005,11 @@ class ResolveTokenFileTest(unittest.TestCase):
         self.assertTrue(os.path.isabs(resolved))
         self.assertEqual(resolved, os.path.abspath("caches/token.json"))
 
+    def test_path_outside_allowed_roots_is_rejected(self):
+        with self.assertRaises(SystemExit) as ctx:
+            xero_client.resolve_token_file("/etc/token.json")
+        self.assertIn("must stay under", str(ctx.exception))
+
     def test_cli_override_places_lock_beside_resolved_cache(self):
         """The lock is opened at f"{TOKEN_FILE}.lock"; with the cache resolved
         through the CLI flag the lock lands beside it, not beside the module."""
