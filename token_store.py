@@ -8,6 +8,7 @@ from __future__ import annotations
 
 import os
 import tempfile
+from pathlib import Path
 
 # Historical cache: next to this module. Used only when that file already
 # exists so existing installs keep working after the default moved to the
@@ -17,34 +18,33 @@ LEGACY_MODULE_TOKEN_FILE = os.path.join(
 )
 
 
-def _home_dir() -> str:
-    return os.path.realpath(os.path.expanduser("~"))
+def _home_dir() -> Path:
+    return Path.home().resolve()
 
 
-def _under(path: str, root: str) -> bool:
-    real = os.path.realpath(path)
-    root = os.path.realpath(root)
-    return real == root or real.startswith(root + os.sep)
+def _under_home(path: Path) -> bool:
+    try:
+        path.resolve().relative_to(_home_dir())
+    except ValueError:
+        return False
+    return True
 
 
 def _state_home_token_file() -> str:
     if os.name == "nt":
-        base = os.environ.get("LOCALAPPDATA") or os.path.join(
-            os.path.expanduser("~"), "AppData", "Local"
+        base = os.environ.get("LOCALAPPDATA") or str(
+            Path.home() / "AppData" / "Local"
         )
-        if not _under(base, _home_dir()):
-            base = os.path.join(_home_dir(), "AppData", "Local")
-        return os.path.join(os.path.realpath(base), "xero-trial-balance-export", "token.json")
+        base_path = Path(base).expanduser()
+        if not _under_home(base_path):
+            base_path = Path.home() / "AppData" / "Local"
+        return str(base_path.resolve() / "xero-trial-balance-export" / "token.json")
     xdg = os.environ.get("XDG_STATE_HOME")
-    if xdg and _under(xdg, _home_dir()):
-        return os.path.join(
-            os.path.realpath(os.path.abspath(xdg)),
-            "xero-trial-balance-export",
-            "token.json",
-        )
-    return os.path.join(
-        _home_dir(), ".local", "state", "xero-trial-balance-export", "token.json"
-    )
+    if xdg:
+        xdg_path = Path(xdg).expanduser()
+        if _under_home(xdg_path):
+            return str(xdg_path.resolve() / "xero-trial-balance-export" / "token.json")
+    return str(_home_dir() / ".local" / "state" / "xero-trial-balance-export" / "token.json")
 
 
 def safe_token_path(path: str) -> str:
@@ -52,25 +52,28 @@ def safe_token_path(path: str) -> str:
 
     The cache must be named token.json and must stay under the home
     directory, the process working directory, the system temp directory,
-    or the install directory. That keeps CLI/env overrides usable in
-    tests and local checkouts without opening arbitrary filesystem paths.
+    or the install directory.
     """
-    if os.path.basename(path) != "token.json":
+    candidate = Path(path).expanduser().resolve()
+    if candidate.name != "token.json":
         raise SystemExit("error: token cache path must be named token.json")
-    real = os.path.realpath(os.path.abspath(path))
     roots = (
         _home_dir(),
-        os.path.realpath(os.getcwd()),
-        os.path.realpath(tempfile.gettempdir()),
-        os.path.realpath(os.path.dirname(os.path.abspath(__file__))),
+        Path.cwd().resolve(),
+        Path(tempfile.gettempdir()).resolve(),
+        Path(__file__).resolve().parent,
     )
-    if not any(_under(real, root) for root in roots):
-        raise SystemExit(
-            "error: token cache path must stay under the home directory, "
-            "the process working directory, the system temp directory, "
-            "or the install directory."
-        )
-    return real
+    for root in roots:
+        try:
+            candidate.relative_to(root)
+        except ValueError:
+            continue
+        return str(candidate)
+    raise SystemExit(
+        "error: token cache path must stay under the home directory, "
+        "the process working directory, the system temp directory, "
+        "or the install directory."
+    )
 
 
 DEFAULT_TOKEN_FILE = safe_token_path(_state_home_token_file())
@@ -84,12 +87,12 @@ def resolve_token_file(cli_value: str | None = None) -> str:
     module-adjacent token.json, then the per-user state directory.
     """
     if cli_value is not None and cli_value.strip():
-        return safe_token_path(os.path.abspath(cli_value))
+        return safe_token_path(str(Path(cli_value).expanduser()))
     env_value = os.environ.get("XERO_TOKEN_FILE")
     if env_value is not None and env_value.strip():
-        return safe_token_path(os.path.abspath(env_value))
+        return safe_token_path(str(Path(env_value).expanduser()))
     if os.path.isfile(LEGACY_MODULE_TOKEN_FILE):
-        return safe_token_path(os.path.abspath(LEGACY_MODULE_TOKEN_FILE))
+        return safe_token_path(LEGACY_MODULE_TOKEN_FILE)
     return DEFAULT_TOKEN_FILE
 
 

@@ -29,6 +29,7 @@ from ctypes import wintypes
 from contextlib import contextmanager
 from datetime import datetime, timedelta, timezone
 from email.utils import parsedate_to_datetime
+from pathlib import Path
 from typing import Any, cast
 
 import requests
@@ -342,11 +343,11 @@ def _release_token_lock(lock_file) -> None:
 @contextmanager
 def _token_cache_lock():
     """Hold the cross-process lock for TOKEN_FILE's cache transaction."""
-    token_file = safe_token_path(TOKEN_FILE)
-    lock_path = f"{token_file}.lock"
+    token_file = Path(safe_token_path(TOKEN_FILE))
+    lock_path = Path(str(token_file) + ".lock")
     try:
-        os.makedirs(os.path.dirname(token_file) or ".", exist_ok=True)
-        lock_file = open(lock_path, "a+b")
+        token_file.parent.mkdir(parents=True, exist_ok=True)
+        lock_file = lock_path.open("a+b")
     except OSError as exc:
         raise SystemExit(
             f"error: could not open the token cache lock {lock_path} ({exc}); "

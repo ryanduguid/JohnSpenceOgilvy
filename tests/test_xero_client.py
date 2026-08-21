@@ -972,14 +972,19 @@ class ResolveTokenFileTest(unittest.TestCase):
     process working directory."""
 
     def test_cli_value_beats_env_var(self):
-        with mock.patch.dict(os.environ, {"XERO_TOKEN_FILE": "/tmp/env-cache/token.json"}):
-            resolved = xero_client.resolve_token_file("/tmp/cli-cache/token.json")
-        self.assertEqual(resolved, os.path.abspath("/tmp/cli-cache/token.json"))
+        with tempfile.TemporaryDirectory() as tmp:
+            cli = os.path.join(tmp, "cli-cache", "token.json")
+            env = os.path.join(tmp, "env-cache", "token.json")
+            with mock.patch.dict(os.environ, {"XERO_TOKEN_FILE": env}):
+                resolved = xero_client.resolve_token_file(cli)
+            self.assertEqual(Path(resolved), Path(cli).resolve())
 
     def test_env_var_used_when_cli_value_absent(self):
-        with mock.patch.dict(os.environ, {"XERO_TOKEN_FILE": "/tmp/env-cache/token.json"}):
-            resolved = xero_client.resolve_token_file()
-        self.assertEqual(resolved, os.path.abspath("/tmp/env-cache/token.json"))
+        with tempfile.TemporaryDirectory() as tmp:
+            env = os.path.join(tmp, "env-cache", "token.json")
+            with mock.patch.dict(os.environ, {"XERO_TOKEN_FILE": env}):
+                resolved = xero_client.resolve_token_file()
+            self.assertEqual(Path(resolved), Path(env).resolve())
 
     def test_default_is_per_user_state_not_site_packages(self):
         env = {k: v for k, v in os.environ.items() if k != "XERO_TOKEN_FILE"}
@@ -995,15 +1000,19 @@ class ResolveTokenFileTest(unittest.TestCase):
         self.assertEqual(resolved_path.parent.name, "xero-trial-balance-export")
 
     def test_blank_cli_value_falls_through_to_env(self):
-        with mock.patch.dict(os.environ, {"XERO_TOKEN_FILE": "/tmp/env-cache/token.json"}):
-            resolved = xero_client.resolve_token_file("   ")
-        self.assertEqual(resolved, os.path.abspath("/tmp/env-cache/token.json"))
+        with tempfile.TemporaryDirectory() as tmp:
+            env = os.path.join(tmp, "env-cache", "token.json")
+            with mock.patch.dict(os.environ, {"XERO_TOKEN_FILE": env}):
+                resolved = xero_client.resolve_token_file("   ")
+            self.assertEqual(Path(resolved), Path(env).resolve())
 
     def test_relative_cli_value_is_made_absolute(self):
-        with mock.patch.dict(os.environ, {"XERO_TOKEN_FILE": "/tmp/env-cache/token.json"}):
-            resolved = xero_client.resolve_token_file("caches/token.json")
-        self.assertTrue(os.path.isabs(resolved))
-        self.assertEqual(resolved, os.path.abspath("caches/token.json"))
+        with tempfile.TemporaryDirectory() as tmp:
+            env = os.path.join(tmp, "env-cache", "token.json")
+            with mock.patch.dict(os.environ, {"XERO_TOKEN_FILE": env}):
+                resolved = xero_client.resolve_token_file("caches/token.json")
+            self.assertTrue(os.path.isabs(resolved))
+            self.assertEqual(Path(resolved), Path("caches/token.json").resolve())
 
     def test_path_outside_allowed_roots_is_rejected(self):
         with self.assertRaises(SystemExit) as ctx:
@@ -1015,9 +1024,9 @@ class ResolveTokenFileTest(unittest.TestCase):
         through the CLI flag the lock lands beside it, not beside the module."""
         with tempfile.TemporaryDirectory() as temp_dir:
             cache_path = os.path.join(temp_dir, "token.json")
-            with mock.patch.dict(os.environ, {"XERO_TOKEN_FILE": "/tmp/env-cache/token.json"}):
+            with mock.patch.dict(os.environ, {"XERO_TOKEN_FILE": os.path.join(temp_dir, "env", "token.json")}):
                 resolved = xero_client.resolve_token_file(cache_path)
-            self.assertEqual(resolved, os.path.abspath(cache_path))
+            self.assertEqual(Path(resolved), Path(cache_path).resolve())
             with mock.patch.object(xero_client, "TOKEN_FILE", resolved):
                 with xero_client._token_cache_lock():
                     pass
