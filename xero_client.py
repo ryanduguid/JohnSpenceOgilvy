@@ -39,7 +39,6 @@ CONNECTIONS_URL = "https://api.xero.com/connections"
 from token_store import (  # noqa: E402
     DEFAULT_TOKEN_FILE,
     resolve_token_file,
-    safe_token_path,
 )
 
 TOKEN_FILE = resolve_token_file()
@@ -343,11 +342,22 @@ def _release_token_lock(lock_file) -> None:
 @contextmanager
 def _token_cache_lock():
     """Hold the cross-process lock for TOKEN_FILE's cache transaction."""
-    token_file = Path(safe_token_path(TOKEN_FILE))
-    lock_path = Path(str(token_file) + ".lock")
+    token_file = os.path.abspath(TOKEN_FILE)
+    allowed_roots = (
+        os.path.abspath(os.path.expanduser("~")),
+        os.path.abspath(os.getcwd()),
+        os.path.abspath(tempfile.gettempdir()),
+        os.path.abspath(os.path.dirname(__file__)),
+    )
+    if os.path.basename(token_file) != "token.json" or not any(
+        token_file == root or token_file.startswith(root + os.sep)
+        for root in allowed_roots
+    ):
+        raise SystemExit("error: token cache path is not allowed.")
+    lock_path = token_file + ".lock"
     try:
-        token_file.parent.mkdir(parents=True, exist_ok=True)
-        lock_file = lock_path.open("a+b")
+        os.makedirs(os.path.dirname(token_file) or ".", exist_ok=True)
+        lock_file = open(lock_path, "a+b")
     except OSError as exc:
         raise SystemExit(
             f"error: could not open the token cache lock {lock_path} ({exc}); "
