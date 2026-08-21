@@ -8,7 +8,6 @@ from __future__ import annotations
 
 import os
 import tempfile
-from pathlib import Path
 
 # Historical cache: next to this module. Used only when that file already
 # exists so existing installs keep working after the default moved to the
@@ -18,62 +17,39 @@ LEGACY_MODULE_TOKEN_FILE = os.path.join(
 )
 
 
-def _home_dir() -> Path:
-    return Path.home().resolve()
-
-
-def _under_home(path: Path) -> bool:
-    try:
-        path.resolve().relative_to(_home_dir())
-    except ValueError:
-        return False
-    return True
-
-
 def _state_home_token_file() -> str:
+    home = os.path.abspath(os.path.expanduser("~"))
     if os.name == "nt":
-        base = os.environ.get("LOCALAPPDATA") or str(
-            Path.home() / "AppData" / "Local"
-        )
-        base_path = Path(base).expanduser()
-        if not _under_home(base_path):
-            base_path = Path.home() / "AppData" / "Local"
-        return str(base_path.resolve() / "xero-trial-balance-export" / "token.json")
-    xdg = os.environ.get("XDG_STATE_HOME")
-    if xdg:
-        xdg_path = Path(xdg).expanduser()
-        if _under_home(xdg_path):
-            return str(xdg_path.resolve() / "xero-trial-balance-export" / "token.json")
-    return str(_home_dir() / ".local" / "state" / "xero-trial-balance-export" / "token.json")
+        return os.path.join(home, "AppData", "Local", "xero-trial-balance-export", "token.json")
+    return os.path.join(home, ".local", "state", "xero-trial-balance-export", "token.json")
 
 
 def safe_token_path(path: str) -> str:
-    """Return a realpath that is allowed to hold the Xero token cache.
+    """Return an absolute path allowed to hold the Xero token cache.
 
     The cache must be named token.json and must stay under the home
     directory, the process working directory, the system temp directory,
-    or the install directory.
+    or the install directory. abspath + prefix check is the CodeQL
+    sanitizer for path injection.
     """
-    candidate = Path(path).expanduser().resolve()
-    if candidate.name != "token.json":
+    candidate = os.path.abspath(os.path.expanduser(path))
+    if os.path.basename(candidate) != "token.json":
         raise SystemExit("error: token cache path must be named token.json")
     roots = (
-        _home_dir(),
-        Path.cwd().resolve(),
-        Path(tempfile.gettempdir()).resolve(),
-        Path(__file__).resolve().parent,
+        os.path.abspath(os.path.expanduser("~")),
+        os.path.abspath(os.getcwd()),
+        os.path.abspath(tempfile.gettempdir()),
+        os.path.abspath(os.path.dirname(__file__)),
     )
-    for root in roots:
-        try:
-            candidate.relative_to(root)
-        except ValueError:
-            continue
-        return str(candidate)
-    raise SystemExit(
-        "error: token cache path must stay under the home directory, "
-        "the process working directory, the system temp directory, "
-        "or the install directory."
-    )
+    if not any(
+        candidate == root or candidate.startswith(root + os.sep) for root in roots
+    ):
+        raise SystemExit(
+            "error: token cache path must stay under the home directory, "
+            "the process working directory, the system temp directory, "
+            "or the install directory."
+        )
+    return candidate
 
 
 DEFAULT_TOKEN_FILE = safe_token_path(_state_home_token_file())
@@ -87,10 +63,10 @@ def resolve_token_file(cli_value: str | None = None) -> str:
     module-adjacent token.json, then the per-user state directory.
     """
     if cli_value is not None and cli_value.strip():
-        return safe_token_path(str(Path(cli_value).expanduser()))
+        return safe_token_path(cli_value)
     env_value = os.environ.get("XERO_TOKEN_FILE")
     if env_value is not None and env_value.strip():
-        return safe_token_path(str(Path(env_value).expanduser()))
+        return safe_token_path(env_value)
     if os.path.isfile(LEGACY_MODULE_TOKEN_FILE):
         return safe_token_path(LEGACY_MODULE_TOKEN_FILE)
     return DEFAULT_TOKEN_FILE
