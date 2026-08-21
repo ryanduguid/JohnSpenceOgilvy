@@ -108,10 +108,6 @@ class _CallbackServer(HTTPServer):
     """
 
     allow_reuse_address = False
-    callback_path: str = "/"
-    auth_code: str | None = None
-    auth_error: str | None = None
-    returned_state: str | None = None
 
     def server_bind(self):
         exclusive = getattr(socket, "SO_EXCLUSIVEADDRUSE", None)
