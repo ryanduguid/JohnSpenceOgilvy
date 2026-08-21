@@ -32,14 +32,14 @@ def safe_token_path(path: str) -> str:
     or the install directory. abspath + prefix check is the CodeQL
     sanitizer for path injection.
     """
-    candidate = os.path.abspath(os.path.expanduser(path))
+    candidate = os.path.realpath(os.path.abspath(os.path.expanduser(path)))
     if os.path.basename(candidate) != "token.json":
         raise SystemExit("error: token cache path must be named token.json")
     roots = (
-        os.path.abspath(os.path.expanduser("~")),
-        os.path.abspath(os.getcwd()),
-        os.path.abspath(tempfile.gettempdir()),
-        os.path.abspath(os.path.dirname(__file__)),
+        os.path.realpath(os.path.abspath(os.path.expanduser("~"))),
+        os.path.realpath(os.path.abspath(os.getcwd())),
+        os.path.realpath(os.path.abspath(tempfile.gettempdir())),
+        os.path.realpath(os.path.abspath(os.path.dirname(__file__))),
     )
     if not any(
         candidate == root or candidate.startswith(root + os.sep) for root in roots
