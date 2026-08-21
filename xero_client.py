@@ -36,9 +36,7 @@ TOKEN_URL = "https://identity.xero.com/connect/token"
 CONNECTIONS_URL = "https://api.xero.com/connections"
 from token_store import (  # noqa: E402
     DEFAULT_TOKEN_FILE,
-    LEGACY_MODULE_TOKEN_FILE,
     resolve_token_file,
-    _state_home_token_file,
 )
 
 TOKEN_FILE = resolve_token_file()
