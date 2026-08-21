@@ -1031,9 +1031,8 @@ class ResolveTokenFileTest(unittest.TestCase):
             xero_client.resolve_token_file("/etc/token.json")
         self.assertIn("must stay under", str(ctx.exception))
 
-    def test_cli_override_places_lock_beside_resolved_cache(self):
-        """The lock is opened at f"{TOKEN_FILE}.lock"; with the cache resolved
-        through the CLI flag the lock lands beside it, not beside the module."""
+    def test_cli_override_still_locks_the_state_dir_cache(self):
+        """A CLI cache path is allowed; the lock stays in the default state dir."""
         with tempfile.TemporaryDirectory() as temp_dir:
             cache_path = os.path.join(temp_dir, "token.json")
             with mock.patch.dict(os.environ, {"XERO_TOKEN_FILE": os.path.join(temp_dir, "env", "token.json")}):
@@ -1042,10 +1041,12 @@ class ResolveTokenFileTest(unittest.TestCase):
                 os.path.normcase(os.path.realpath(resolved)),
                 os.path.normcase(os.path.realpath(cache_path)),
             )
+            lock_path = os.path.realpath(xero_client.DEFAULT_TOKEN_FILE) + ".lock"
             with mock.patch.object(xero_client, "TOKEN_FILE", resolved):
                 with xero_client._token_cache_lock():
                     pass
-            self.assertTrue(os.path.exists(cache_path + ".lock"))
+            self.assertTrue(os.path.exists(lock_path))
+            self.assertFalse(os.path.exists(cache_path + ".lock"))
 
 
 if __name__ == "__main__":
