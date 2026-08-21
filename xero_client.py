@@ -354,13 +354,9 @@ def _token_cache_lock():
         for root in allowed_roots
     ):
         raise SystemExit("error: token cache path is not allowed.")
-    # Lock beside the default state-dir cache, never beside a caller-supplied
-    # path. CodeQL treats TOKEN_FILE + ".lock" as path injection even after
-    # the prefix check; the default location is built from the home directory.
-    lock_path = os.path.realpath(DEFAULT_TOKEN_FILE) + ".lock"
+    lock_path = token_file + ".lock"
     try:
         os.makedirs(os.path.dirname(token_file) or ".", exist_ok=True)
-        os.makedirs(os.path.dirname(lock_path) or ".", exist_ok=True)
         lock_file = open(lock_path, "a+b")
     except OSError as exc:
         raise SystemExit(
