@@ -621,7 +621,7 @@ def main() -> None:
         help=(
             "Path to the token cache (token.json). This flag takes "
             "precedence over the XERO_TOKEN_FILE environment variable; "
-            "the default is token.json beside xero_client.py."
+            "the default is the per-user state directory (or a leftover module-adjacent token.json)."
         ),
     )
     args = parser.parse_args()

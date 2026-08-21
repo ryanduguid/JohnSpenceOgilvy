@@ -34,34 +34,13 @@ import requests
 
 TOKEN_URL = "https://identity.xero.com/connect/token"
 CONNECTIONS_URL = "https://api.xero.com/connections"
-# The historical cache location: next to this module. Kept as the fallback so
-# existing installs keep reading the token.json they already have.
-DEFAULT_TOKEN_FILE = os.path.join(
-    os.path.dirname(os.path.abspath(__file__)), "token.json"
+from token_store import (  # noqa: E402
+    DEFAULT_TOKEN_FILE,
+    LEGACY_MODULE_TOKEN_FILE,
+    resolve_token_file,
+    _state_home_token_file,
 )
 
-
-def resolve_token_file(cli_value: str | None = None) -> str:
-    """Resolve the token cache path.
-
-    Order: an explicit command-line value (export_tb.py's --token-file),
-    then the XERO_TOKEN_FILE environment variable, then the module-relative
-    default. An operator who passes the flag gets exactly the cache they
-    asked for; a scheduled job that sets only the environment variable is
-    unaffected. The result is absolute, so the sibling lock path
-    (``<cache>.lock``) stays beside the cache whatever the process working
-    directory is.
-    """
-    if cli_value is not None and cli_value.strip():
-        return os.path.abspath(cli_value)
-    env_value = os.environ.get("XERO_TOKEN_FILE")
-    if env_value is not None and env_value.strip():
-        return os.path.abspath(env_value)
-    return DEFAULT_TOKEN_FILE
-
-
-# Module-level for the existing callers and tests that patch it. Entry points
-# that parse a command line or load .env re-resolve after doing so.
 TOKEN_FILE = resolve_token_file()
 
 # Windows token caches are JSON envelopes whose payload is protected for the
@@ -361,6 +340,7 @@ def _token_cache_lock():
     """Hold the cross-process lock for TOKEN_FILE's cache transaction."""
     lock_path = f"{TOKEN_FILE}.lock"
     try:
+        os.makedirs(os.path.dirname(os.path.abspath(TOKEN_FILE)) or ".", exist_ok=True)
         lock_file = open(lock_path, "a+b")
     except OSError as exc:
         raise SystemExit(

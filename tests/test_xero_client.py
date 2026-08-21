@@ -800,7 +800,8 @@ class TokenCacheConcurrencyTest(unittest.TestCase):
         with open(self.token_file, "rb") as source:
             before = source.read()
 
-        with mock.patch.object(xero_client, "TOKEN_LOCK_TIMEOUT", 0), \
+        with mock.patch.object(xero_client, "TOKEN_FILE", self.token_file), \
+                mock.patch.object(xero_client, "TOKEN_LOCK_TIMEOUT", 0), \
                 mock.patch.object(xero_client, "_try_token_lock", return_value=False), \
                 mock.patch.object(xero_client, "_load_tokens_unlocked") as load_tokens:
             with self.assertRaises(SystemExit) as raised:
@@ -979,15 +980,16 @@ class ResolveTokenFileTest(unittest.TestCase):
             resolved = xero_client.resolve_token_file()
         self.assertEqual(resolved, os.path.abspath("/tmp/env-cache/token.json"))
 
-    def test_default_is_module_relative(self):
+    def test_default_is_per_user_state_not_site_packages(self):
         env = {k: v for k, v in os.environ.items() if k != "XERO_TOKEN_FILE"}
         with mock.patch.dict(os.environ, env, clear=True):
             resolved = xero_client.resolve_token_file()
         self.assertEqual(resolved, xero_client.DEFAULT_TOKEN_FILE)
-        self.assertEqual(
+        self.assertNotEqual(
             os.path.dirname(resolved),
             os.path.dirname(os.path.abspath(xero_client.__file__)),
         )
+        self.assertTrue(resolved.endswith("xero-trial-balance-export/token.json"))
 
     def test_blank_cli_value_falls_through_to_env(self):
         with mock.patch.dict(os.environ, {"XERO_TOKEN_FILE": "/tmp/env-cache/token.json"}):
