@@ -119,5 +119,5 @@ The `{tenant}` segment of the default filename is the org name lowercased, with 
 
 ## Author
 
-Ryan Duguid, accountant in Newcastle NSW, CA ANZ Provisional Member.
+Ryan Duguid, accountant in Newcastle NSW, provisional member of Chartered Accountants ANZ.
 
