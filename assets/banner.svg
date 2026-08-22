@@ -13,6 +13,6 @@
   <text x="88" y="186" font-family="Consolas, 'Courier New', monospace" font-size="22" letter-spacing="6" fill="#9F6FD8">XERO TRIAL BALANCE CONNECTOR</text>
   <text x="88" y="292" font-family="-apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, Helvetica, Arial, sans-serif" font-size="76" font-weight="700" fill="#ECECEC">JohnSpenceOgilvy</text>
   <line x1="88" y1="330" x2="428" y2="330" stroke="#5C2D91" stroke-width="3"/>
-  <text x="88" y="404" font-family="-apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, Helvetica, Arial, sans-serif" font-size="22" fill="#B1AFAD">Movement + YTD Rec · Rotation-Safe Refresh · Windows DPAPI Encrypted · Power BI Ready CSV</text>
+  <text x="88" y="404" font-family="-apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, Helvetica, Arial, sans-serif" font-size="22" fill="#B1AFAD">Movement + YTD Rec &#183; Rotation-Safe Refresh &#183; Windows DPAPI Encrypted &#183; Power BI Ready CSV</text>
   <text x="88" y="488" font-family="Consolas, 'Courier New', monospace" font-size="22" fill="#9F6FD8">$ python export_tb.py --date 2026-06-30 --tenant "Demo Company"</text>
 </svg>
